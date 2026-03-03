@@ -29,6 +29,12 @@ const NIGHT_CITIZEN_VISION_MULT     = 0.35;  // citizen vision at midnight (frac
 const NIGHT_ZOMBIE_VISION_MULT      = 0.70;  // zombie vision at midnight
 const NIGHT_ZOMBIE_SPEED_MULT       = 1.35;  // zombie speed multiplier at midnight
 
+// Barricades — player-placed walls that block zombies but not citizens
+const MAX_BARRICADES    = 10;    // maximum number of barricade segments
+const BARRICADE_WIDTH   = 6;     // visual + collision width (px)
+const BARRICADE_HALF    = BARRICADE_WIDTH / 2;
+const MAX_BARRICADE_LEN = 200;   // max length of a single barricade (px)
+
 // ============================================================
 // CANVAS & DOM
 // ============================================================
@@ -43,9 +49,10 @@ const nightCtx    = nightCanvas.getContext('2d');
 
 const hudCitizens = document.getElementById('cnt-citizens');
 const hudPanicked = document.getElementById('cnt-panicked');
-const hudZombies  = document.getElementById('cnt-zombies');
-const hudTime     = document.getElementById('cnt-time');
-const hudRate     = document.getElementById('cnt-rate');
+const hudZombies    = document.getElementById('cnt-zombies');
+const hudTime       = document.getElementById('cnt-time');
+const hudRate       = document.getElementById('cnt-rate');
+const hudBarricades = document.getElementById('cnt-barricades');
 const endOverlay  = document.getElementById('end-overlay');
 const endMessage  = document.getElementById('end-message');
 const pzOverlay   = document.getElementById('pz-overlay');
@@ -69,6 +76,13 @@ let heatGrid;  // Float32Array — accumulated infection intensity
 
 // Day/night cycle state
 let daylight = 1.0; // 1.0 = noon, 0.0 = midnight
+
+// Barricade state
+let barricades = [];        // [{x1, y1, x2, y2}]
+let barricadeMask;          // Uint8Array — 1 = barricade pixel
+let barricadeMode = false;  // true = placement mode active
+let barricadeStart = null;  // {x, y} first click position
+let mouseX = 0, mouseY = 0;
 
 let canvasW = 0, canvasH = 0;
 
@@ -231,24 +245,74 @@ function circlePassable(cx, cy) {
   );
 }
 
+// ============================================================
+// BARRICADE MASK — blocks zombies, citizens pass through
+// ============================================================
+function initBarricadeMask() {
+  barricadeMask = new Uint8Array(canvasW * canvasH);
+}
+
+function stampBarricadeLine(x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const steps = Math.max(1, Math.ceil(dist));
+  const sx = dx / steps, sy = dy / steps;
+  for (let k = 0; k <= steps; k++) {
+    const cx = (x1 + sx * k) | 0;
+    const cy = (y1 + sy * k) | 0;
+    for (let py = -BARRICADE_HALF; py <= BARRICADE_HALF; py++) {
+      for (let px = -BARRICADE_HALF; px <= BARRICADE_HALF; px++) {
+        if (px * px + py * py > BARRICADE_HALF * BARRICADE_HALF) continue;
+        const mx = cx + px, my = cy + py;
+        if (mx >= 0 && mx < canvasW && my >= 0 && my < canvasH) {
+          barricadeMask[my * canvasW + mx] = 1;
+        }
+      }
+    }
+  }
+}
+
+function barricadePassable(x, y) {
+  const px = x | 0, py = y | 0;
+  if (px < 0 || px >= canvasW || py < 0 || py >= canvasH) return true;
+  return barricadeMask[py * canvasW + px] === 0;
+}
+
+function barricadeCirclePassable(cx, cy) {
+  const r = DOT_RADIUS;
+  const d = r * 0.707;
+  return (
+    barricadePassable(cx,     cy)     &&
+    barricadePassable(cx + r, cy)     && barricadePassable(cx - r, cy) &&
+    barricadePassable(cx,     cy + r) && barricadePassable(cx,     cy - r) &&
+    barricadePassable(cx + d, cy + d) && barricadePassable(cx - d, cy + d) &&
+    barricadePassable(cx + d, cy - d) && barricadePassable(cx - d, cy - d)
+  );
+}
+
+function zombieCirclePassable(cx, cy) {
+  return circlePassable(cx, cy) && barricadeCirclePassable(cx, cy);
+}
+
 // Attempt to move entity i by (vx, vy).
 // Applies wall sliding; if fully blocked by a corner, sweeps up to 8 rotated
 // escape directions so entities never freeze against building corners.
 function moveEntity(i, vx, vy) {
+  const canPass = states[i] === 2 ? zombieCirclePassable : circlePassable;
   const x = posX[i], y = posY[i];
   const nx = x + vx, ny = y + vy;
 
   // Full diagonal move
-  if (circlePassable(nx, ny)) {
+  if (canPass(nx, ny)) {
     posX[i] = nx; posY[i] = ny;
     return;
   }
 
   // Wall slide: X-only
-  if (circlePassable(nx, y)) { posX[i] = nx; return; }
+  if (canPass(nx, y)) { posX[i] = nx; return; }
 
   // Wall slide: Y-only
-  if (circlePassable(x, ny)) { posY[i] = ny; return; }
+  if (canPass(x, ny)) { posY[i] = ny; return; }
 
   // Corner stuck: sweep ±45° increments from desired direction until passable
   const s    = Math.sqrt(vx * vx + vy * vy) || CITIZEN_SPEED;
@@ -259,9 +323,8 @@ function moveEntity(i, vx, vy) {
 
     let ex = x + Math.cos(base + delta) * s;
     let ey = y + Math.sin(base + delta) * s;
-    if (circlePassable(ex, ey)) {
+    if (canPass(ex, ey)) {
       posX[i] = ex; posY[i] = ey;
-      // Steer in the escape direction for a short while to clear the corner
       targetX[i]     = Math.max(0, Math.min(canvasW, x + Math.cos(base + delta) * 200));
       targetY[i]     = Math.max(0, Math.min(canvasH, y + Math.sin(base + delta) * 200));
       wanderTimer[i] = 20 + (Math.random() * 40 | 0);
@@ -270,7 +333,7 @@ function moveEntity(i, vx, vy) {
 
     ex = x + Math.cos(base - delta) * s;
     ey = y + Math.sin(base - delta) * s;
-    if (circlePassable(ex, ey)) {
+    if (canPass(ex, ey)) {
       posX[i] = ex; posY[i] = ey;
       targetX[i]     = Math.max(0, Math.min(canvasW, x + Math.cos(base - delta) * 200));
       targetY[i]     = Math.max(0, Math.min(canvasH, y + Math.sin(base - delta) * 200));
@@ -526,6 +589,30 @@ function renderNightOverlay() {
     nightCtx.fillStyle = `rgba(5, 5, 25, ${darkness})`;
     nightCtx.fillRect(0, 0, canvasW, canvasH);
   }
+
+  // Barricades
+  if (barricades.length > 0) {
+    simCtx.strokeStyle = '#ff8c00';
+    simCtx.lineWidth = BARRICADE_WIDTH;
+    simCtx.lineCap = 'round';
+    for (const b of barricades) {
+      simCtx.beginPath();
+      simCtx.moveTo(b.x1, b.y1);
+      simCtx.lineTo(b.x2, b.y2);
+      simCtx.stroke();
+    }
+  }
+
+  // Barricade placement preview
+  if (barricadeMode && barricadeStart) {
+    simCtx.strokeStyle = 'rgba(255, 140, 0, 0.5)';
+    simCtx.lineWidth = BARRICADE_WIDTH;
+    simCtx.lineCap = 'round';
+    simCtx.beginPath();
+    simCtx.moveTo(barricadeStart.x, barricadeStart.y);
+    simCtx.lineTo(mouseX, mouseY);
+    simCtx.stroke();
+  }
 }
 
 // ============================================================
@@ -566,6 +653,12 @@ function updateHUD() {
     lastRateTime = now;
   }
   hudRate.textContent = currentRate.toFixed(1) + '/s';
+
+  // Barricade count
+  const remaining = MAX_BARRICADES - barricades.length;
+  hudBarricades.textContent = barricadeMode
+    ? `${remaining} left [PLACING]`
+    : `${remaining} left`;
 
   // Sample for chart (every 10 frames)
   if (frameCount % 10 === 0) {
@@ -692,6 +785,7 @@ function init() {
   setupCanvases();
   initSprites();
   initGrid();
+  initBarricadeMask();
 
   const buildings = generateCity(canvasW, canvasH);
   mask = buildStreetMask(buildings, canvasW, canvasH);
@@ -713,7 +807,10 @@ function init() {
   lastRateTime    = startTime;
   currentRate     = 0;
   zombieHistory.length = 0;
-  daylight   = 1.0;
+  daylight       = 1.0;
+  barricades     = [];
+  barricadeMode  = false;
+  barricadeStart = null;
 
   rafHandle  = requestAnimationFrame(gameLoop);
 }
@@ -721,9 +818,36 @@ function init() {
 // Start on load
 init();
 
-// Click: select patient zero(s) (when waiting) OR restart after game-over
+// Click: barricade placement, patient zero selection, or restart
 window.addEventListener('click', (e) => {
   if (endOverlay.style.display !== 'none') { init(); return; }
+
+  // Barricade placement (two-click: start then end)
+  if (barricadeMode && !waitingForPatientZero) {
+    if (!barricadeStart) {
+      barricadeStart = { x: e.clientX, y: e.clientY };
+    } else {
+      if (barricades.length < MAX_BARRICADES) {
+        const dx = e.clientX - barricadeStart.x;
+        const dy = e.clientY - barricadeStart.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len > 5) {
+          let x2 = e.clientX, y2 = e.clientY;
+          if (len > MAX_BARRICADE_LEN) {
+            x2 = barricadeStart.x + (dx / len) * MAX_BARRICADE_LEN;
+            y2 = barricadeStart.y + (dy / len) * MAX_BARRICADE_LEN;
+          }
+          const b = { x1: barricadeStart.x, y1: barricadeStart.y, x2, y2 };
+          barricades.push(b);
+          stampBarricadeLine(b.x1, b.y1, b.x2, b.y2);
+        }
+      }
+      barricadeStart = null;
+      if (barricades.length >= MAX_BARRICADES) barricadeMode = false;
+    }
+    return;
+  }
+
   if (waitingForPatientZero) {
     infectNearestCitizen(e.clientX, e.clientY);
     patientZeroCount++;
@@ -731,7 +855,7 @@ window.addEventListener('click', (e) => {
   }
 });
 
-// Keydown: speed controls, multi-pz confirm, heat map toggle, restart
+// Keydown: speed, multi-pz, heat map, barricades, restart
 window.addEventListener('keydown', (e) => {
   if (endOverlay.style.display !== 'none') { init(); return; }
 
@@ -749,6 +873,18 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Barricade mode toggle
+  if ((e.key === 'b' || e.key === 'B') && barricades.length < MAX_BARRICADES) {
+    barricadeMode = !barricadeMode;
+    barricadeStart = null;
+    return;
+  }
+  if (e.key === 'Escape') {
+    barricadeStart = null;
+    barricadeMode = false;
+    return;
+  }
+
   switch (e.key) {
     case '1': simSpeed = 1; paused = false; break;
     case '2': simSpeed = 2; paused = false; break;
@@ -761,6 +897,9 @@ window.addEventListener('keydown', (e) => {
   }
   hudSpeed.textContent = paused ? '||' : simSpeed + 'x';
 });
+
+// Track mouse position for barricade preview
+window.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
 
 // Restart on resize (city proportions change with canvas dimensions)
 let resizeTimeout;
