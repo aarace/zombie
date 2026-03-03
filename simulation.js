@@ -16,6 +16,11 @@ const ZOMBIE_VISION_DISTANCE        = 150;    // px — how far a zombie can see
 const INFECTION_DISTANCE            = 10;     // px — contact distance for infection
 const INITIAL_ZOMBIE                = true;  // true = auto-spawn patient zero; false = click a citizen to start
 
+// Shelters / safe zones
+const NUM_SHELTERS            = 6;      // buildings designated as shelters
+const SHELTER_DETECTION_RANGE = 200;    // px — panicked citizens detect shelters within this range
+const SHELTER_ENTRY_DIST      = 8;      // px — distance from building edge to enter shelter
+
 // ============================================================
 // CANVAS & DOM
 // ============================================================
@@ -27,11 +32,14 @@ const simCtx     = simCanvas.getContext('2d');
 const hudCitizens = document.getElementById('cnt-citizens');
 const hudPanicked = document.getElementById('cnt-panicked');
 const hudZombies  = document.getElementById('cnt-zombies');
+const hudSaved    = document.getElementById('cnt-saved');
 const endOverlay  = document.getElementById('end-overlay');
+const endTitle    = document.getElementById('end-title');
 const endMessage  = document.getElementById('end-message');
 const pzOverlay   = document.getElementById('pz-overlay');
 
 let waitingForPatientZero = false;
+let shelters = []; // [{x, y, w, h, cx, cy}] — buildings designated as safe zones
 
 let canvasW = 0, canvasH = 0;
 
@@ -44,7 +52,7 @@ function setupCanvases() {
 
 // ============================================================
 // ENTITY STATE — parallel typed arrays for cache efficiency
-// state: 0 = citizen, 1 = panicked, 2 = zombie
+// state: 0 = citizen, 1 = panicked, 2 = zombie, 3 = saved (in shelter)
 // ============================================================
 const posX        = new Float32Array(NUM_CITIZENS);
 const posY        = new Float32Array(NUM_CITIZENS);
@@ -88,12 +96,13 @@ function createSprite(r, g, b) {
   return { canvas: oc, half: cx };
 }
 
-let spriteCitizen, spritePanicked, spriteZombie;
+let spriteCitizen, spritePanicked, spriteZombie, spriteSaved;
 
 function initSprites() {
   spriteCitizen  = createSprite(255, 255, 255);
   spritePanicked = createSprite(255, 215,   0);
   spriteZombie   = createSprite(210,  25,  25);
+  spriteSaved    = createSprite( 50, 200,  50);
 }
 
 // ============================================================
@@ -243,9 +252,57 @@ function computeSeek(ix, iy, tx, ty, speed) {
 }
 
 // ============================================================
+// SHELTERS — select buildings as safe zones, render green glow
+// ============================================================
+
+/** Pick NUM_SHELTERS buildings from the top 30% largest. */
+function selectShelters(buildings) {
+  const sorted = buildings.slice().sort((a, b) => (b.w * b.h) - (a.w * a.h));
+  const pool   = sorted.slice(0, Math.max(NUM_SHELTERS, Math.ceil(sorted.length * 0.3)));
+  // Fisher-Yates partial shuffle
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  shelters = pool.slice(0, NUM_SHELTERS).map(b => ({
+    x: b.x, y: b.y, w: b.w, h: b.h,
+    cx: b.x + b.w / 2, cy: b.y + b.h / 2
+  }));
+}
+
+/** Draw green glow borders around shelter buildings on the city canvas. */
+function renderShelters(ctx) {
+  ctx.save();
+  ctx.shadowColor   = 'rgba(0, 220, 60, 0.8)';
+  ctx.shadowBlur    = 12;
+  ctx.strokeStyle   = 'rgba(0, 200, 50, 0.7)';
+  ctx.lineWidth     = 2;
+  for (const s of shelters) {
+    ctx.strokeRect(s.x - 1, s.y - 1, s.w + 2, s.h + 2);
+  }
+  // Second pass for brighter core
+  ctx.shadowBlur  = 4;
+  ctx.strokeStyle = 'rgba(0, 255, 80, 0.5)';
+  ctx.lineWidth   = 1;
+  for (const s of shelters) {
+    ctx.strokeRect(s.x, s.y, s.w, s.h);
+  }
+  ctx.restore();
+}
+
+/** Distance from point to nearest edge of a rectangle. Returns 0 if inside. */
+function distToRect(px, py, rx, ry, rw, rh) {
+  const dx = Math.max(rx - px, 0, px - (rx + rw));
+  const dy = Math.max(ry - py, 0, py - (ry + rh));
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// ============================================================
 // CITIZEN UPDATE
 // ============================================================
 function updateCitizen(i) {
+  if (states[i] === 3) return; // saved — frozen in shelter
+
   const x  = posX[i], y  = posY[i];
   const vR = CITIZEN_VISION_DISTANCE;
 
@@ -281,12 +338,30 @@ function updateCitizen(i) {
     states[i]     = 1;
     panicTimer[i] = 90;
 
-    // Flee: direction directly away from zombie + angular jitter
-    const ang = Math.atan2(y - nearestZY, x - nearestZX)
-              + (Math.random() - 0.5) * (Math.PI * 0.55);
-    const fleeX = Math.max(0, Math.min(canvasW - 1, x + Math.cos(ang) * 200));
-    const fleeY = Math.max(0, Math.min(canvasH - 1, y + Math.sin(ang) * 200));
-    computeSeek(x, y, fleeX, fleeY, PANICKED_SPEED_MULTIPLIER * CITIZEN_SPEED);
+    // Check if a shelter is nearby — flee toward it instead of random direction
+    let shelterTarget = false;
+    let bestShelterDist = SHELTER_DETECTION_RANGE;
+    let bestSX = 0, bestSY = 0;
+    for (const s of shelters) {
+      const sd = distToRect(x, y, s.x, s.y, s.w, s.h);
+      if (sd < bestShelterDist) {
+        bestShelterDist = sd;
+        bestSX = s.cx; bestSY = s.cy;
+        shelterTarget = true;
+      }
+    }
+
+    if (shelterTarget) {
+      // Flee toward the shelter
+      computeSeek(x, y, bestSX, bestSY, PANICKED_SPEED_MULTIPLIER * CITIZEN_SPEED);
+    } else {
+      // Flee: direction directly away from zombie + angular jitter
+      const ang = Math.atan2(y - nearestZY, x - nearestZX)
+                + (Math.random() - 0.5) * (Math.PI * 0.55);
+      const fleeX = Math.max(0, Math.min(canvasW - 1, x + Math.cos(ang) * 200));
+      const fleeY = Math.max(0, Math.min(canvasH - 1, y + Math.sin(ang) * 200));
+      computeSeek(x, y, fleeX, fleeY, PANICKED_SPEED_MULTIPLIER * CITIZEN_SPEED);
+    }
 
   } else {
     // --- CALM / RECOVERING ---
@@ -301,6 +376,16 @@ function updateCitizen(i) {
   }
 
   moveEntity(i, _vx, _vy);
+
+  // --- SHELTER ENTRY CHECK (after movement) ---
+  if (states[i] === 1) {
+    for (const s of shelters) {
+      if (distToRect(posX[i], posY[i], s.x, s.y, s.w, s.h) < SHELTER_ENTRY_DIST) {
+        states[i] = 3; // saved!
+        return;
+      }
+    }
+  }
 }
 
 // ============================================================
@@ -324,7 +409,7 @@ function updateZombie(i, toInfect) {
       const cell = gridCells[gr * GRID_COLS + gc];
       for (let k = 0; k < cell.length; k++) {
         const j = cell[k];
-        if (j === i || states[j] === 2) continue; // skip self & other zombies
+        if (j === i || states[j] === 2 || states[j] === 3) continue; // skip self, other zombies, saved
 
         const dx = posX[j] - x, dy = posY[j] - y;
         const d2 = dx * dx + dy * dy;
@@ -404,7 +489,7 @@ function infectNearestCitizen(mx, my) {
 function render() {
   simCtx.clearRect(0, 0, canvasW, canvasH);
 
-  const sc = spriteCitizen,  sp = spritePanicked,  sz = spriteZombie;
+  const sc = spriteCitizen,  sp = spritePanicked,  sz = spriteZombie, ss = spriteSaved;
 
   for (let i = 0; i < NUM_CITIZENS; i++) {
     if (states[i] !== 0) continue;
@@ -418,23 +503,29 @@ function render() {
     if (states[i] !== 2) continue;
     simCtx.drawImage(sz.canvas, posX[i] - sz.half, posY[i] - sz.half);
   }
+  for (let i = 0; i < NUM_CITIZENS; i++) {
+    if (states[i] !== 3) continue;
+    simCtx.drawImage(ss.canvas, posX[i] - ss.half, posY[i] - ss.half);
+  }
 }
 
 // ============================================================
 // HUD
 // ============================================================
 function updateHUD() {
-  let nc = 0, np = 0, nz = 0;
+  let nc = 0, np = 0, nz = 0, ns = 0;
   for (let i = 0; i < NUM_CITIZENS; i++) {
     const s = states[i];
-    if (s === 0) nc++;
+    if (s === 0)      nc++;
     else if (s === 1) np++;
-    else nz++;
+    else if (s === 2) nz++;
+    else              ns++;
   }
   hudCitizens.textContent = nc;
   hudPanicked.textContent = np;
   hudZombies.textContent  = nz;
-  return nz;
+  hudSaved.textContent    = ns;
+  return { nz, ns };
 }
 
 // ============================================================
@@ -464,13 +555,28 @@ function gameLoop() {
 
   // 4. Render and update HUD
   render();
-  const nz = updateHUD();
+  const { nz, ns } = updateHUD();
 
-  // 5. Win condition
-  if (nz >= NUM_CITIZENS) {
+  // 5. Win condition — all citizens are either zombies or saved
+  if (nz + ns >= NUM_CITIZENS) {
     const secs = (frameCount / 60).toFixed(0);
-    endMessage.textContent =
-      `All ${NUM_CITIZENS} citizens infected — ${frameCount} frames (~${secs}s)`;
+
+    if (ns > 0) {
+      // Survivors made it to shelters
+      endTitle.textContent = 'SURVIVORS FOUND';
+      endTitle.style.textShadow = '0 0 40px rgba(30, 255, 60, 0.9), 0 0 80px rgba(0, 200, 50, 0.4)';
+      endOverlay.style.background = 'rgba(0, 60, 20, 0.72)';
+      endMessage.textContent =
+        `${ns} saved, ${nz} infected — ${frameCount} frames (~${secs}s)`;
+    } else {
+      // Total infection
+      endTitle.textContent = 'INFECTION COMPLETE';
+      endTitle.style.textShadow = '0 0 40px rgba(255, 30, 30, 0.9), 0 0 80px rgba(255, 0, 0, 0.4)';
+      endOverlay.style.background = 'rgba(90, 0, 0, 0.72)';
+      endMessage.textContent =
+        `All ${NUM_CITIZENS} citizens infected — ${frameCount} frames (~${secs}s)`;
+    }
+
     endOverlay.style.display = 'flex';
     return; // stop loop
   }
@@ -491,6 +597,9 @@ function init() {
   const buildings = generateCity(canvasW, canvasH);
   mask = buildStreetMask(buildings, canvasW, canvasH);
   renderCity(cityCtx, buildings, canvasW, canvasH);
+
+  selectShelters(buildings);
+  renderShelters(cityCtx);
 
   spawnEntities();
 

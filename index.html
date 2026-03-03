@@ -21,6 +21,7 @@
     .row-c .value { color: #d8d8d8; }
     .row-p .value { color: #ffd700; }
     .row-z .value { color: #cc2222; }
+    .row-s .value { color: #00cc44; }
 
     #end-overlay {
       display: none;
@@ -84,10 +85,11 @@
     <div class="row-c"><span class="label">CITIZENS  </span><span class="value" id="cnt-citizens">0</span></div>
     <div class="row-p"><span class="label">PANICKED  </span><span class="value" id="cnt-panicked">0</span></div>
     <div class="row-z"><span class="label">ZOMBIES   </span><span class="value" id="cnt-zombies">0</span></div>
+    <div class="row-s"><span class="label">SAVED     </span><span class="value" id="cnt-saved">0</span></div>
   </div>
 
   <div id="end-overlay">
-    <h1>INFECTION COMPLETE</h1>
+    <h1 id="end-title">INFECTION COMPLETE</h1>
     <p id="end-message"></p>
     <p class="hint">Click or press any key to restart</p>
   </div>
