@@ -27,9 +27,13 @@ const simCtx     = simCanvas.getContext('2d');
 const hudCitizens = document.getElementById('cnt-citizens');
 const hudPanicked = document.getElementById('cnt-panicked');
 const hudZombies  = document.getElementById('cnt-zombies');
+const hudTime     = document.getElementById('cnt-time');
+const hudRate     = document.getElementById('cnt-rate');
 const endOverlay  = document.getElementById('end-overlay');
 const endMessage  = document.getElementById('end-message');
 const pzOverlay   = document.getElementById('pz-overlay');
+const chartCanvas = document.getElementById('chart-canvas');
+const chartCtx    = chartCanvas.getContext('2d');
 
 let waitingForPatientZero = false;
 
@@ -434,7 +438,67 @@ function updateHUD() {
   hudCitizens.textContent = nc;
   hudPanicked.textContent = np;
   hudZombies.textContent  = nz;
+
+  // Elapsed time
+  const elapsed = (performance.now() - startTime) / 1000;
+  hudTime.textContent = elapsed < 60
+    ? elapsed.toFixed(1) + 's'
+    : (elapsed / 60).toFixed(1) + 'm';
+
+  // Infection rate (updated every 500ms)
+  const now = performance.now();
+  if (now - lastRateTime >= 500) {
+    const dt = (now - lastRateTime) / 1000;
+    currentRate = Math.max(0, (nz - lastZombieCount) / dt);
+    lastZombieCount = nz;
+    lastRateTime = now;
+  }
+  hudRate.textContent = currentRate.toFixed(1) + '/s';
+
+  // Sample for chart (every 10 frames)
+  if (frameCount % 10 === 0) {
+    zombieHistory.push(nz);
+    if (zombieHistory.length > CHART_W) zombieHistory.shift();
+    renderChart();
+  }
+
   return nz;
+}
+
+function renderChart() {
+  chartCanvas.width  = CHART_W;
+  chartCanvas.height = CHART_H;
+  const ctx = chartCtx;
+  const len = zombieHistory.length;
+  if (len < 2) return;
+
+  ctx.clearRect(0, 0, CHART_W, CHART_H);
+
+  // Draw infection curve
+  const max = NUM_CITIZENS;
+  const pad = 4;
+  const w = CHART_W - pad * 2;
+  const h = CHART_H - pad * 2;
+
+  ctx.beginPath();
+  ctx.strokeStyle = '#cc2222';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < len; i++) {
+    const x = pad + (i / (len - 1)) * w;
+    const y = pad + h - (zombieHistory[i] / max) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Fill under curve
+  const lastX = pad + w;
+  const lastY = pad + h - (zombieHistory[len - 1] / max) * h;
+  ctx.lineTo(lastX, pad + h);
+  ctx.lineTo(pad, pad + h);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(210, 25, 25, 0.15)';
+  ctx.fill();
 }
 
 // ============================================================
@@ -442,6 +506,13 @@ function updateHUD() {
 // ============================================================
 let rafHandle  = null;
 let frameCount = 0;
+let startTime  = 0;
+let lastZombieCount = 0;
+let lastRateTime    = 0;
+let currentRate     = 0;
+const CHART_W       = 200;
+const CHART_H       = 80;
+const zombieHistory  = [];  // sampled zombie counts for the chart
 
 function gameLoop() {
   frameCount++;
@@ -500,6 +571,12 @@ function init() {
   pzOverlay.style.display = waitingForPatientZero ? 'flex' : 'none';
 
   frameCount = 0;
+  startTime  = performance.now();
+  lastZombieCount = INITIAL_ZOMBIE ? 1 : 0;
+  lastRateTime    = startTime;
+  currentRate     = 0;
+  zombieHistory.length = 0;
+
   rafHandle  = requestAnimationFrame(gameLoop);
 }
 
