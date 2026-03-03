@@ -496,17 +496,28 @@ function pickStreetTarget(i) {
 
 // True if the straight line from (x1,y1) to (x2,y2) passes through no building pixel.
 // Ray-marches in 3px steps; skips endpoints so entities near walls aren't self-occluded.
+// If the origin is inside a building (shelter), the ray skips until it exits that building.
 function hasLineOfSight(x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist < 1) return true;
   const steps = Math.ceil(dist / 3);
   const sx = dx / steps, sy = dy / steps;
+  // Check if origin is inside a building — if so, skip until ray exits that building
+  const ox = (x1) | 0, oy = (y1) | 0;
+  const originInBuilding = (ox >= 0 && ox < canvasW && oy >= 0 && oy < canvasH)
+    ? mask[oy * canvasW + ox] === 0 : false;
+  let exited = !originInBuilding;
   for (let k = 1; k < steps; k++) {
     const px = (x1 + sx * k) | 0;
     const py = (y1 + sy * k) | 0;
     if (px < 0 || px >= canvasW || py < 0 || py >= canvasH) return false;
-    if (mask[py * canvasW + px] === 0) return false;
+    if (mask[py * canvasW + px] === 0) {
+      if (exited) return false; // hit a different building — blocked
+      // still inside origin building, keep going
+    } else {
+      exited = true; // ray has left the building
+    }
   }
   return true;
 }
