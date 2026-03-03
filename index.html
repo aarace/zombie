@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zombie City</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    canvas { position: absolute; top: 0; left: 0; display: block; }
+
+    #hud {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      font: 13px/2.1 'Courier New', monospace;
+      pointer-events: none;
+      user-select: none;
+    }
+    #hud .label { color: #555; }
+    .row-c .value { color: #d8d8d8; }
+    .row-p .value { color: #ffd700; }
+    .row-z .value { color: #cc2222; }
+
+    #end-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(90, 0, 0, 0.72);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+    }
+    #end-overlay h1 {
+      color: #fff;
+      font: bold 48px/1 'Courier New', monospace;
+      letter-spacing: 4px;
+      text-shadow: 0 0 40px rgba(255, 30, 30, 0.9), 0 0 80px rgba(255, 0, 0, 0.4);
+    }
+    #end-overlay p {
+      color: #ccc;
+      font: 18px 'Courier New', monospace;
+    }
+    #end-overlay .hint {
+      font-size: 13px;
+      color: #777;
+      margin-top: 4px;
+    }
+
+    /* Patient-zero instruction overlay — sits over the canvas, clicks pass through */
+    #pz-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;   /* clicks pass through to the canvas */
+    }
+    #pz-overlay .pz-main {
+      color: rgba(220, 220, 220, 0.85);
+      font: bold 22px/1 'Courier New', monospace;
+      letter-spacing: 3px;
+      animation: pz-pulse 2.4s ease-in-out infinite;
+    }
+    #pz-overlay .pz-sub {
+      color: rgba(140, 140, 140, 0.6);
+      font: 13px/1 'Courier New', monospace;
+      letter-spacing: 1px;
+    }
+    @keyframes pz-pulse {
+      0%, 100% { opacity: 0.35; }
+      50%       { opacity: 1;    }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="city-canvas"></canvas>
+  <canvas id="sim-canvas"></canvas>
+
+  <div id="hud">
+    <div class="row-c"><span class="label">CITIZENS  </span><span class="value" id="cnt-citizens">0</span></div>
+    <div class="row-p"><span class="label">PANICKED  </span><span class="value" id="cnt-panicked">0</span></div>
+    <div class="row-z"><span class="label">ZOMBIES   </span><span class="value" id="cnt-zombies">0</span></div>
+  </div>
+
+  <div id="end-overlay">
+    <h1>INFECTION COMPLETE</h1>
+    <p id="end-message"></p>
+    <p class="hint">Click or press any key to restart</p>
+  </div>
+
+  <div id="pz-overlay">
+    <p class="pz-main">CLICK A CITIZEN</p>
+    <p class="pz-sub">to infect patient zero</p>
+  </div>
+
+  <!--
+    NOTE: ES modules require HTTP serving.
+    Run:  npx serve .   OR   python -m http.server 8000
+    Then open: http://localhost:8000
+  -->
+  <script type="module" src="simulation.js"></script>
+</body>
+</html>
