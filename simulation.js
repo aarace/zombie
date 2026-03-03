@@ -1217,15 +1217,16 @@ function pickEdgeSpawn() {
   return null;
 }
 
-/** Spawn a wave of zombies by recycling dead entity slots. */
+/** Spawn a wave of zombies by recycling dead entity slots, or converting edge citizens. */
 function spawnWave() {
   waveNumber++;
   const count = WAVE_BASE_SIZE + (waveNumber - 1) * WAVE_SIZE_INCREASE;
   const sprinterChance = Math.min(0.5, SPRINTER_CHANCE + waveNumber * WAVE_SPRINTER_RAMP);
   let spawned = 0;
 
+  // First pass: recycle dead (state 5) slots
   for (let i = 0; i < numCitizens && spawned < count; i++) {
-    if (states[i] !== 5) continue; // only recycle dead slots
+    if (states[i] !== 5) continue;
     const pos = pickEdgeSpawn();
     if (!pos) continue;
     posX[i] = pos.x;
@@ -1233,7 +1234,27 @@ function spawnWave() {
     states[i] = 2;
     zombieType[i] = Math.random() < sprinterChance ? 1 : 0;
     wanderTimer[i] = 0;
+    shelterIdx[i] = -1;
     spawned++;
+  }
+
+  // Second pass: if not enough dead slots, convert calm citizens (state 0) near edges
+  if (spawned < count) {
+    const edgeDist = 80; // px from canvas edge
+    for (let i = 0; i < numCitizens && spawned < count; i++) {
+      if (states[i] !== 0) continue;
+      const ex = posX[i], ey = posY[i];
+      if (ex < edgeDist || ex > canvasW - edgeDist || ey < edgeDist || ey > canvasH - edgeDist) {
+        const pos = pickEdgeSpawn();
+        if (!pos) continue;
+        posX[i] = pos.x;
+        posY[i] = pos.y;
+        states[i] = 2;
+        zombieType[i] = Math.random() < sprinterChance ? 1 : 0;
+        wanderTimer[i] = 0;
+        spawned++;
+      }
+    }
   }
 }
 
@@ -1471,6 +1492,23 @@ function init() {
 
   endOverlay.style.display = 'none';
 
+  // Reset game state BEFORE demo/patient-zero setup
+  frameCount = 0;
+  startTime  = performance.now();
+  lastZombieCount = INITIAL_ZOMBIE ? 1 : 0;
+  lastRateTime    = startTime;
+  currentRate     = 0;
+  zombieHistory.length = 0;
+  savedHistory.length  = 0;
+  daylight       = 1.0;
+  barricades     = [];
+  barricadeMode  = false;
+  shotLines      = [];
+  waveNumber     = 0;
+  waveCalmTimer  = 0;
+  waveStarted    = false;
+  reinforceTimer = 0;
+
   if (demoMode) {
     // Auto-pick 1–3 patient zeros, skip overlay entirely
     waitingForPatientZero = false;
@@ -1490,22 +1528,6 @@ function init() {
     pzOverlay.style.display = waitingForPatientZero ? 'flex' : 'none';
     if (pzCount) pzCount.textContent = '';
   }
-
-  frameCount = 0;
-  startTime  = performance.now();
-  lastZombieCount = INITIAL_ZOMBIE ? 1 : 0;
-  lastRateTime    = startTime;
-  currentRate     = 0;
-  zombieHistory.length = 0;
-  savedHistory.length  = 0;
-  daylight       = 1.0;
-  barricades     = [];
-  barricadeMode  = false;
-  shotLines      = [];
-  waveNumber     = 0;
-  waveCalmTimer  = 0;
-  waveStarted    = false;
-  reinforceTimer = 0;
 
   rafHandle  = requestAnimationFrame(gameLoop);
 }
