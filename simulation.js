@@ -702,7 +702,7 @@ function renderNightOverlay() {
   }
   for (let i = 0; i < NUM_CITIZENS; i++) {
     if (states[i] !== 3) continue;
-    simCtx.drawImage(sv.canvas, posX[i] - sv.half, posY[i] - sv.half);
+    simCtx.drawImage(spriteSaved.canvas, posX[i] - spriteSaved.half, posY[i] - spriteSaved.half);
   }
 }
 
