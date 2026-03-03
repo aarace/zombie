@@ -22,6 +22,20 @@
     .row-p .value { color: #ffd700; }
     .row-z .value { color: #cc2222; }
     .row-s .value { color: #6a9; }
+    .row-t .value { color: #888; }
+    .row-r .value { color: #e87040; }
+
+    #chart-canvas {
+      position: absolute;
+      bottom: 14px;
+      right: 14px;
+      width: 200px;
+      height: 80px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid #222;
+      border-radius: 3px;
+      pointer-events: none;
+    }
 
     #end-overlay {
       display: none;
@@ -92,7 +106,11 @@
     <div class="row-p"><span class="label">PANICKED  </span><span class="value" id="cnt-panicked">0</span></div>
     <div class="row-z"><span class="label">ZOMBIES   </span><span class="value" id="cnt-zombies">0</span></div>
     <div class="row-s"><span class="label">SPEED     </span><span class="value" id="cnt-speed">1x</span></div>
+    <div class="row-t"><span class="label">TIME      </span><span class="value" id="cnt-time">0s</span></div>
+    <div class="row-r"><span class="label">RATE      </span><span class="value" id="cnt-rate">0/s</span></div>
   </div>
+
+  <canvas id="chart-canvas"></canvas>
 
   <div id="end-overlay">
     <h1>INFECTION COMPLETE</h1>
