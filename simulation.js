@@ -549,6 +549,7 @@ function gameLoop() {
 
   // 3. Apply infections after full update (avoids mid-loop state mutation)
   for (const idx of toInfect) {
+    if (states[idx] === 3) continue; // reached shelter this frame — immune
     states[idx]      = 2;
     wanderTimer[idx] = 0;
   }
