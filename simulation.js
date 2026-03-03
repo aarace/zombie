@@ -981,6 +981,11 @@ function gameLoop() {
     }
 
     endOverlay.style.display = 'flex';
+
+    // Demo mode: auto-restart after delay
+    if (demoMode) {
+      demoTimer = setTimeout(init, DEMO_RESTART_DELAY);
+    }
     return; // stop loop
   }
 
@@ -988,17 +993,29 @@ function gameLoop() {
 }
 
 // ============================================================
+// DEMO MODE — ?demo in URL for hands-free autoplay loop
+// ============================================================
+const demoMode = new URLSearchParams(window.location.search).has('demo');
+const DEMO_RESTART_DELAY = 5000; // ms to show end screen before restarting
+let demoTimer = null;
+
+// ============================================================
 // INIT & RESTART
 // ============================================================
 function init() {
   if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+  if (demoTimer) { clearTimeout(demoTimer); demoTimer = null; }
 
-  // Read population from slider
-  const popSlider = document.getElementById('pop-slider');
-  if (popSlider) {
-    numCitizens = parseInt(popSlider.value, 10);
-    const popLabel = document.getElementById('cnt-pop');
-    if (popLabel) popLabel.textContent = numCitizens;
+  // Read population from slider, or randomize in demo mode
+  if (demoMode) {
+    numCitizens = 200 + ((Math.random() * 16) | 0) * 50; // 200–950 in steps of 50
+  } else {
+    const popSlider = document.getElementById('pop-slider');
+    if (popSlider) {
+      numCitizens = parseInt(popSlider.value, 10);
+      const popLabel = document.getElementById('cnt-pop');
+      if (popLabel) popLabel.textContent = numCitizens;
+    }
   }
   allocateArrays(numCitizens);
 
@@ -1019,10 +1036,25 @@ function init() {
 
   endOverlay.style.display = 'none';
 
-  waitingForPatientZero = !INITIAL_ZOMBIE;
-  patientZeroCount = 0;
-  pzOverlay.style.display = waitingForPatientZero ? 'flex' : 'none';
-  if (pzCount) pzCount.textContent = '';
+  if (demoMode) {
+    // Auto-pick 1–3 patient zeros, skip overlay entirely
+    waitingForPatientZero = false;
+    pzOverlay.style.display = 'none';
+    const pzCount_ = 1 + ((Math.random() * 3) | 0);
+    for (let p = 0; p < pzCount_; p++) {
+      const idx = (Math.random() * numCitizens) | 0;
+      if (states[idx] !== 2) {
+        states[idx]      = 2;
+        zombieType[idx]  = 0;
+        wanderTimer[idx] = 0;
+      }
+    }
+  } else {
+    waitingForPatientZero = !INITIAL_ZOMBIE;
+    patientZeroCount = 0;
+    pzOverlay.style.display = waitingForPatientZero ? 'flex' : 'none';
+    if (pzCount) pzCount.textContent = '';
+  }
 
   frameCount = 0;
   startTime  = performance.now();
