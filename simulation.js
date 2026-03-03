@@ -34,6 +34,10 @@ const MAX_BARRICADES    = 10;    // maximum number of barricade segments
 const BARRICADE_WIDTH   = 6;     // visual + collision width (px)
 const BARRICADE_HALF    = BARRICADE_WIDTH / 2;
 const BARRICADE_MARGIN  = 2;     // px gap from building wall
+const BARRICADE_HP              = 100;    // hit points per barricade segment
+const BARRICADE_ZOMBIE_DPS      = 1;      // damage per frame from zombie bashing (~1.7s to break)
+const BARRICADE_PANICKED_DPS    = 3;      // panicked citizens bash faster (~0.5s to break)
+const BARRICADE_BASH_DIST       = 8;      // px — how close entity must be to bash
 
 // Shelters / safe zones
 const NUM_SHELTERS            = 6;      // buildings designated as shelters
@@ -108,7 +112,7 @@ let heatGrid;  // Float32Array — accumulated infection intensity
 let daylight = 1.0; // 1.0 = noon, 0.0 = midnight
 
 // Barricade state
-let barricades = [];        // [{x1, y1, x2, y2}]
+let barricades = [];        // [{x1, y1, x2, y2, hp}]
 let barricadeMask;          // Uint8Array — 1 = barricade pixel
 let barricadeMode = false;  // true = placement mode active
 let barricadePreview = null; // {x1, y1, x2, y2} — ghost wall at cursor
@@ -327,6 +331,38 @@ function stampBarricadeLine(x1, y1, x2, y2) {
       }
     }
   }
+}
+
+/** Erase a barricade from the pixel mask. */
+function eraseBarricadeLine(x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const steps = Math.max(1, Math.ceil(dist));
+  const sx = dx / steps, sy = dy / steps;
+  for (let k = 0; k <= steps; k++) {
+    const cx = (x1 + sx * k) | 0;
+    const cy = (y1 + sy * k) | 0;
+    for (let py = -BARRICADE_HALF; py <= BARRICADE_HALF; py++) {
+      for (let px = -BARRICADE_HALF; px <= BARRICADE_HALF; px++) {
+        if (px * px + py * py > BARRICADE_HALF * BARRICADE_HALF) continue;
+        const mx = cx + px, my = cy + py;
+        if (mx >= 0 && mx < canvasW && my >= 0 && my < canvasH) {
+          barricadeMask[my * canvasW + mx] = 0;
+        }
+      }
+    }
+  }
+}
+
+/** Distance from point (px,py) to the nearest point on segment (x1,y1)-(x2,y2). */
+function distToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.sqrt((px - x1) * (px - x1) + (py - y1) * (py - y1));
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  const cx = x1 + t * dx, cy = y1 + t * dy;
+  return Math.sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
 }
 
 function barricadePassable(x, y) {
@@ -823,12 +859,16 @@ function render() {
     simCtx.restore();
   }
 
-  // Barricades
+  // Barricades — color shifts from orange (#ff8c00) to dark red (#8b0000) as HP drops
   if (barricades.length > 0) {
-    simCtx.strokeStyle = '#ff8c00';
     simCtx.lineWidth = BARRICADE_WIDTH;
     simCtx.lineCap = 'round';
     for (const b of barricades) {
+      const t = Math.max(0, Math.min(1, b.hp / BARRICADE_HP)); // 1 = full, 0 = destroyed
+      const r = Math.round(255 * t + 139 * (1 - t));
+      const g = Math.round(140 * t);
+      const bl = 0;
+      simCtx.strokeStyle = `rgb(${r},${g},${bl})`;
       simCtx.beginPath();
       simCtx.moveTo(b.x1, b.y1);
       simCtx.lineTo(b.x2, b.y2);
@@ -1056,6 +1096,7 @@ function updateSoldier(i, toKill) {
     const by = y + (avgZY - y) * 0.4;
     const b = computeStreetBarricade(bx, by);
     if (b) {
+      b.hp = BARRICADE_HP;
       barricades.push(b);
       stampBarricadeLine(b.x1, b.y1, b.x2, b.y2);
       soldierBarricadeCooldown[i] = SOLDIER_BARRICADE_COOLDOWN;
@@ -1204,12 +1245,37 @@ function simStep() {
     if (states[idx] === 2) states[idx] = 5; // zombie -> dead
   }
 
-  // 5. Decay shot line TTLs
+  // 5. Barricade bashing — zombies and panicked citizens damage nearby barricades
+  if (barricades.length > 0) {
+    for (let i = 0; i < numCitizens; i++) {
+      const st = states[i];
+      if (st !== 2 && st !== 1) continue; // only zombies and panicked
+      const dps = st === 2 ? BARRICADE_ZOMBIE_DPS : BARRICADE_PANICKED_DPS;
+      const ex = posX[i], ey = posY[i];
+      for (let b = 0; b < barricades.length; b++) {
+        const bar = barricades[b];
+        if (distToSegment(ex, ey, bar.x1, bar.y1, bar.x2, bar.y2) < BARRICADE_BASH_DIST) {
+          bar.hp -= dps;
+          break; // each entity bashes at most one barricade per frame
+        }
+      }
+    }
+    // Remove destroyed barricades
+    for (let b = barricades.length - 1; b >= 0; b--) {
+      if (barricades[b].hp <= 0) {
+        const bar = barricades[b];
+        eraseBarricadeLine(bar.x1, bar.y1, bar.x2, bar.y2);
+        barricades.splice(b, 1);
+      }
+    }
+  }
+
+  // 6. Decay shot line TTLs
   for (let s = shotLines.length - 1; s >= 0; s--) {
     if (--shotLines[s].ttl <= 0) shotLines.splice(s, 1);
   }
 
-  // 6. Wave spawning — when all zombies are dead but citizens remain
+  // 7. Wave spawning — when all zombies are dead but citizens remain
   if (waveStarted) {
     let nzNow = 0, nsolNow = 0;
     for (let i = 0; i < numCitizens; i++) {
@@ -1231,7 +1297,7 @@ function simStep() {
       }
     }
 
-    // 7. Soldier reinforcements — spawn when outnumbered
+    // 8. Soldier reinforcements — spawn when outnumbered
     if (--reinforceTimer <= 0) {
       reinforceTimer = SOLDIER_REINFORCE_INTERVAL;
       if (nsolNow > 0 && nzNow > nsolNow * SOLDIER_REINFORCE_RATIO) {
@@ -1388,7 +1454,7 @@ window.addEventListener('click', (e) => {
   // Barricade placement — single click stamps the street-fitted wall
   if (barricadeMode && !waitingForPatientZero) {
     if (barricadePreview && barricades.length < MAX_BARRICADES) {
-      const b = { ...barricadePreview };
+      const b = { ...barricadePreview, hp: BARRICADE_HP };
       barricades.push(b);
       stampBarricadeLine(b.x1, b.y1, b.x2, b.y2);
       if (barricades.length >= MAX_BARRICADES) barricadeMode = false;
