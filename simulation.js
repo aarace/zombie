@@ -87,6 +87,7 @@ const hudRate       = document.getElementById('cnt-rate');
 const hudBarricades = document.getElementById('cnt-barricades');
 const hudSaved      = document.getElementById('cnt-saved');
 const hudSoldiers   = document.getElementById('cnt-soldiers');
+const hudKilled     = document.getElementById('cnt-killed');
 const hudWave       = document.getElementById('cnt-wave');
 const endOverlay  = document.getElementById('end-overlay');
 const endTitle    = document.getElementById('end-title');
@@ -134,6 +135,7 @@ let waveStarted   = false; // true once first zombie exists
 // Soldier reinforcement state
 let soldierCap       = 0;  // max soldiers for this game (3% of initial pop)
 let reinforceTimer   = 0;  // countdown to next reinforcement check
+let zombiesKilled    = 0;  // total zombies killed by soldiers
 
 let canvasW = 0, canvasH = 0;
 
@@ -935,6 +937,7 @@ function updateHUD() {
   hudZombies.textContent  = nz;
   hudSaved.textContent    = ns;
   hudSoldiers.textContent = nsol;
+  hudKilled.textContent   = zombiesKilled;
   hudWave.textContent = waveNumber > 0 ? waveNumber : '-';
 
   // Time-of-day indicator
@@ -1340,7 +1343,7 @@ function simStep() {
 
   // 4. Apply soldier kills
   for (const idx of toKill) {
-    if (states[idx] === 2) states[idx] = 5; // zombie -> dead
+    if (states[idx] === 2) { states[idx] = 5; zombiesKilled++; }
   }
 
   // 5. Barricade bashing — zombies and panicked citizens damage nearby barricades
@@ -1435,16 +1438,18 @@ function gameLoop() {
       endTitle.style.textShadow = '0 0 40px rgba(30, 255, 60, 0.9), 0 0 80px rgba(0, 200, 50, 0.4)';
       endOverlay.style.background = 'rgba(0, 60, 20, 0.72)';
       const waveStr = waveNumber > 0 ? ` — survived ${waveNumber} wave${waveNumber > 1 ? 's' : ''}` : '';
+      const killStr = zombiesKilled > 0 ? `, ${zombiesKilled} zombies killed` : '';
       endMessage.textContent =
-        `${ns} saved, ${nsol} soldiers, ${nz} infected${waveStr} — ${frameCount} frames (~${secs}s)`;
+        `${ns} saved, ${nsol} soldiers${killStr}, ${nz} infected${waveStr} — ${frameCount} frames (~${secs}s)`;
     } else {
       // Total infection
       endTitle.textContent = 'INFECTION COMPLETE';
       endTitle.style.textShadow = '0 0 40px rgba(255, 30, 30, 0.9), 0 0 80px rgba(255, 0, 0, 0.4)';
       endOverlay.style.background = 'rgba(90, 0, 0, 0.72)';
       const waveStr = waveNumber > 0 ? ` — wave ${waveNumber}` : '';
+      const killStr = zombiesKilled > 0 ? `, ${zombiesKilled} killed` : '';
       endMessage.textContent =
-        `All overrun — ${nz} infected${waveStr} — ${frameCount} frames (~${secs}s)`;
+        `All overrun — ${nz} infected${killStr}${waveStr} — ${frameCount} frames (~${secs}s)`;
     }
 
     endOverlay.style.display = 'flex';
@@ -1519,6 +1524,7 @@ function init() {
   waveCalmTimer  = 0;
   waveStarted    = false;
   reinforceTimer = 0;
+  zombiesKilled  = 0;
 
   if (demoMode) {
     // Auto-pick 1–3 patient zeros, skip overlay entirely
