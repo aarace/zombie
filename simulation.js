@@ -51,6 +51,12 @@ const SOLDIER_INFECTION_DIST             = 6;      // px — zombie must get ver
 const SOLDIER_BARRICADE_COOLDOWN         = 300;    // frames between barricade placements (~5s)
 const SOLDIER_BARRICADE_ZOMBIE_THRESHOLD = 3;      // minimum zombies nearby to trigger barricade
 
+// Zombie waves — escalating reinforcements from map edges
+const WAVE_CALM_FRAMES   = 180;   // ~3s pause between zombie death and next wave
+const WAVE_BASE_SIZE     = 5;     // first wave zombie count
+const WAVE_SIZE_INCREASE = 3;     // additional zombies per wave
+const WAVE_SPRINTER_RAMP = 0.03;  // sprinter chance increase per wave (additive)
+
 // ============================================================
 // CANVAS & DOM
 // ============================================================
@@ -71,6 +77,7 @@ const hudRate       = document.getElementById('cnt-rate');
 const hudBarricades = document.getElementById('cnt-barricades');
 const hudSaved      = document.getElementById('cnt-saved');
 const hudSoldiers   = document.getElementById('cnt-soldiers');
+const hudWave       = document.getElementById('cnt-wave');
 const endOverlay  = document.getElementById('end-overlay');
 const endTitle    = document.getElementById('end-title');
 const endMessage  = document.getElementById('end-message');
@@ -108,6 +115,11 @@ let shelters = []; // [{x, y, w, h, cx, cy}] — buildings designated as safe zo
 
 // Shot visual — brief muzzle flash lines from soldier gunfire
 let shotLines = []; // [{x1, y1, x2, y2, ttl}]
+
+// Wave state
+let waveNumber    = 0;
+let waveCalmTimer = 0;   // frames until next wave spawns
+let waveStarted   = false; // true once first zombie exists
 
 let canvasW = 0, canvasH = 0;
 
@@ -726,6 +738,7 @@ function spawnEntities() {
     states[pz]       = 2;
     zombieType[pz]   = 0;  // patient zero is always normal
     wanderTimer[pz]  = 0;
+    waveStarted = true;
   }
 }
 
@@ -743,6 +756,7 @@ function infectNearestCitizen(mx, my) {
     states[bestIdx]      = 2;
     zombieType[bestIdx]  = 0;  // manually selected zombies are normal
     wanderTimer[bestIdx] = 0;
+    waveStarted = true;
   }
 }
 
@@ -854,6 +868,7 @@ function updateHUD() {
   hudZombies.textContent  = nz;
   hudSaved.textContent    = ns;
   hudSoldiers.textContent = nsol;
+  hudWave.textContent = waveNumber > 0 ? waveNumber : '-';
 
   // Time-of-day indicator
   let timeLabel, timeColor;
@@ -1059,6 +1074,53 @@ function updateSoldier(i, toKill) {
 }
 
 // ============================================================
+// WAVE SPAWNING — recycle dead slots, spawn zombies from edges
+// ============================================================
+
+/** Find a street-passable position near a random map edge. */
+function pickEdgeSpawn() {
+  const edge = (Math.random() * 4) | 0; // 0=top, 1=right, 2=bottom, 3=left
+  const margin = 15; // px inset from canvas edge
+  for (let att = 0; att < 60; att++) {
+    let x, y;
+    switch (edge) {
+      case 0: x = (Math.random() * canvasW) | 0; y = margin + (Math.random() * 20) | 0; break;
+      case 1: x = canvasW - margin - (Math.random() * 20) | 0; y = (Math.random() * canvasH) | 0; break;
+      case 2: x = (Math.random() * canvasW) | 0; y = canvasH - margin - (Math.random() * 20) | 0; break;
+      case 3: x = margin + (Math.random() * 20) | 0; y = (Math.random() * canvasH) | 0; break;
+    }
+    if (circlePassable(x, y)) return { x, y };
+  }
+  // Fallback: any street position
+  for (let att = 0; att < 40; att++) {
+    const x = (Math.random() * canvasW) | 0;
+    const y = (Math.random() * canvasH) | 0;
+    if (circlePassable(x, y)) return { x, y };
+  }
+  return null;
+}
+
+/** Spawn a wave of zombies by recycling dead entity slots. */
+function spawnWave() {
+  waveNumber++;
+  const count = WAVE_BASE_SIZE + (waveNumber - 1) * WAVE_SIZE_INCREASE;
+  const sprinterChance = Math.min(0.5, SPRINTER_CHANCE + waveNumber * WAVE_SPRINTER_RAMP);
+  let spawned = 0;
+
+  for (let i = 0; i < numCitizens && spawned < count; i++) {
+    if (states[i] !== 5) continue; // only recycle dead slots
+    const pos = pickEdgeSpawn();
+    if (!pos) continue;
+    posX[i] = pos.x;
+    posY[i] = pos.y;
+    states[i] = 2;
+    zombieType[i] = Math.random() < sprinterChance ? 1 : 0;
+    wanderTimer[i] = 0;
+    spawned++;
+  }
+}
+
+// ============================================================
 // GAME LOOP
 // ============================================================
 let rafHandle  = null;
@@ -1110,6 +1172,25 @@ function simStep() {
   for (let s = shotLines.length - 1; s >= 0; s--) {
     if (--shotLines[s].ttl <= 0) shotLines.splice(s, 1);
   }
+
+  // 6. Wave spawning — when all zombies are dead but citizens remain
+  if (waveStarted) {
+    let nzNow = 0;
+    for (let i = 0; i < numCitizens; i++) if (states[i] === 2) nzNow++;
+    if (nzNow === 0) {
+      // Count remaining civilians
+      let civLeft = 0;
+      for (let i = 0; i < numCitizens; i++) if (states[i] === 0 || states[i] === 1) civLeft++;
+      if (civLeft > 0) {
+        if (waveCalmTimer <= 0) {
+          spawnWave();
+          waveCalmTimer = WAVE_CALM_FRAMES;
+        } else {
+          waveCalmTimer--;
+        }
+      }
+    }
+  }
 }
 
 function gameLoop() {
@@ -1141,15 +1222,17 @@ function gameLoop() {
       endTitle.textContent = 'SURVIVORS FOUND';
       endTitle.style.textShadow = '0 0 40px rgba(30, 255, 60, 0.9), 0 0 80px rgba(0, 200, 50, 0.4)';
       endOverlay.style.background = 'rgba(0, 60, 20, 0.72)';
+      const waveStr = waveNumber > 0 ? ` — survived ${waveNumber} wave${waveNumber > 1 ? 's' : ''}` : '';
       endMessage.textContent =
-        `${ns} saved, ${nsol} soldiers, ${nz} infected — ${frameCount} frames (~${secs}s)`;
+        `${ns} saved, ${nsol} soldiers, ${nz} infected${waveStr} — ${frameCount} frames (~${secs}s)`;
     } else {
       // Total infection
       endTitle.textContent = 'INFECTION COMPLETE';
       endTitle.style.textShadow = '0 0 40px rgba(255, 30, 30, 0.9), 0 0 80px rgba(255, 0, 0, 0.4)';
       endOverlay.style.background = 'rgba(90, 0, 0, 0.72)';
+      const waveStr = waveNumber > 0 ? ` — wave ${waveNumber}` : '';
       endMessage.textContent =
-        `All overrun — ${nz} infected — ${frameCount} frames (~${secs}s)`;
+        `All overrun — ${nz} infected${waveStr} — ${frameCount} frames (~${secs}s)`;
     }
 
     endOverlay.style.display = 'flex';
@@ -1220,6 +1303,7 @@ function init() {
       zombieType[idx]  = 0;
       wanderTimer[idx] = 0;
     }
+    waveStarted = true;
   } else {
     waitingForPatientZero = !INITIAL_ZOMBIE;
     patientZeroCount = 0;
@@ -1238,6 +1322,9 @@ function init() {
   barricades     = [];
   barricadeMode  = false;
   shotLines      = [];
+  waveNumber     = 0;
+  waveCalmTimer  = 0;
+  waveStarted    = false;
 
   rafHandle  = requestAnimationFrame(gameLoop);
 }
