@@ -589,8 +589,8 @@ function updateCitizen(i) {
 
   moveEntity(i, _vx, _vy);
 
-  // --- SHELTER ENTRY CHECK (after movement) — any citizen can enter ---
-  if (states[i] === 0 || states[i] === 1) {
+  // --- SHELTER ENTRY CHECK (after movement) — only panicked citizens seek shelter ---
+  if (states[i] === 1) {
     for (let si = 0; si < shelters.length; si++) {
       const s = shelters[si];
       if (distToRect(posX[i], posY[i], s.x, s.y, s.w, s.h) < SHELTER_ENTRY_DIST) {
