@@ -34,9 +34,9 @@ const MAX_BARRICADES    = 10;    // maximum number of barricade segments
 const BARRICADE_WIDTH   = 6;     // visual + collision width (px)
 const BARRICADE_HALF    = BARRICADE_WIDTH / 2;
 const BARRICADE_MARGIN  = 2;     // px gap from building wall
-const BARRICADE_HP              = 100;    // hit points per barricade segment
-const BARRICADE_ZOMBIE_DPS      = 1;      // damage per frame from zombie bashing (~1.7s to break)
-const BARRICADE_PANICKED_DPS    = 3;      // panicked citizens bash faster (~0.5s to break)
+const BARRICADE_HP              = 300;    // hit points per barricade segment
+const BARRICADE_ZOMBIE_DPS      = 0.5;    // damage per frame from zombie bashing (~10s to break)
+const BARRICADE_PANICKED_DPS    = 3;      // panicked citizens bash faster (~1.7s to break)
 const BARRICADE_BASH_DIST       = 8;      // px — how close entity must be to bash
 
 // Shelters / safe zones
@@ -45,11 +45,11 @@ const SHELTER_DETECTION_RANGE = 200;    // px — panicked citizens detect shelt
 const SHELTER_ENTRY_DIST      = 8;      // px — distance from building edge to enter shelter
 
 // Soldiers — AI-controlled defenders that patrol, shoot zombies, and place barricades
-const SOLDIER_INITIAL_PCT                = 0.01;   // 1% of population at start
+const SOLDIER_INITIAL_PCT                = 0.02;   // 2% of population at start
 const SOLDIER_MIN                        = 4;      // minimum soldiers regardless of pop
-const SOLDIER_MAX_PCT                    = 0.03;   // hard cap: 3% of initial population
-const SOLDIER_REINFORCE_INTERVAL         = 300;    // frames between reinforcement checks (~5s)
-const SOLDIER_REINFORCE_RATIO            = 2.0;    // zombies:soldiers ratio to trigger reinforcement
+const SOLDIER_MAX_PCT                    = 0.05;   // hard cap: 5% of initial population
+const SOLDIER_REINFORCE_INTERVAL         = 120;    // frames between reinforcement checks (~2s)
+const SOLDIER_REINFORCE_RATIO            = 1.5;    // zombies:soldiers ratio to trigger reinforcement
 const SOLDIER_SPEED                      = 0.6;    // patrol speed (px/frame)
 const SOLDIER_VISION                     = 180;    // px — zombie detection range
 const SOLDIER_SHOOT_RANGE                = 150;    // px — max shooting distance
@@ -58,6 +58,8 @@ const SOLDIER_KILL_CHANCE                = 0.7;    // probability of kill per sh
 const SOLDIER_INFECTION_DIST             = 6;      // px — zombie must get very close to infect soldier
 const SOLDIER_BARRICADE_COOLDOWN         = 300;    // frames between barricade placements (~5s)
 const SOLDIER_BARRICADE_ZOMBIE_THRESHOLD = 3;      // minimum zombies nearby to trigger barricade
+const SOLDIER_SHELTER_RETREAT_RATIO      = 4;      // zombies:1 ratio to seek shelter
+const SOLDIER_SHELTER_LEAVE_FRAMES       = 180;    // frames with no zombies in vision before leaving (~3s)
 
 // Zombie waves — escalating reinforcements from map edges
 const WAVE_CALM_FRAMES   = 180;   // ~3s pause between zombie death and next wave
@@ -707,6 +709,7 @@ function updateZombie(i, toInfect) {
       for (let k = 0; k < cell.length; k++) {
         const j = cell[k];
         if (j === i || states[j] === 2 || states[j] === 3 || states[j] === 5) continue; // skip self, zombies, saved, dead
+        if (states[j] === 4 && shelterIdx[j] >= 0) continue; // soldier inside shelter — immune
 
         const dx = posX[j] - x, dy = posY[j] - y;
         const d2 = dx * dx + dy * dy;
@@ -777,6 +780,7 @@ function spawnEntities() {
     states[si] = 4;
     soldierCooldown[si] = 0;
     soldierBarricadeCooldown[si] = 0;
+    shelterIdx[si] = -1;
   }
 
   // Patient zero — only if configured to auto-spawn
@@ -1037,6 +1041,7 @@ function updateSoldier(i, toKill) {
   const x = posX[i], y = posY[i];
   const vR = SOLDIER_VISION;
   const sR2 = SOLDIER_SHOOT_RANGE * SOLDIER_SHOOT_RANGE;
+  const inShelter = shelterIdx[i] >= 0;
 
   // Scan for zombies in vision range
   let nearestZDist2 = Infinity;
@@ -1085,8 +1090,9 @@ function updateSoldier(i, toKill) {
     }
   }
 
-  // Barricade placement — cluster of zombies approaching
-  if (zombiesInVision >= SOLDIER_BARRICADE_ZOMBIE_THRESHOLD
+  // Barricade placement — cluster of zombies approaching (not while in shelter)
+  if (!inShelter
+      && zombiesInVision >= SOLDIER_BARRICADE_ZOMBIE_THRESHOLD
       && soldierBarricadeCooldown[i] <= 0
       && barricades.length < MAX_BARRICADES) {
     avgZX /= zombiesInVision;
@@ -1107,7 +1113,65 @@ function updateSoldier(i, toKill) {
   if (soldierCooldown[i] > 0) soldierCooldown[i]--;
   if (soldierBarricadeCooldown[i] > 0) soldierBarricadeCooldown[i]--;
 
-  // Movement: approach if out of range, hold position if in range, patrol if no threats
+  // --- SHELTER BEHAVIOR ---
+  if (inShelter) {
+    const si = shelterIdx[i];
+    const s = shelters[si];
+    const pad = 4;
+
+    if (zombiesInVision === 0) {
+      // Count down to leave shelter
+      if (--wanderTimer[i] <= 0) {
+        // Safe enough — leave shelter and resume patrol
+        shelterIdx[i] = -1;
+        // Step outside the shelter building
+        const side = (Math.random() * 4) | 0;
+        if (side === 0)      { posX[i] = s.x - 6; posY[i] = s.cy; }
+        else if (side === 1) { posX[i] = s.x + s.w + 6; posY[i] = s.cy; }
+        else if (side === 2) { posX[i] = s.cx; posY[i] = s.y - 6; }
+        else                 { posX[i] = s.cx; posY[i] = s.y + s.h + 6; }
+        pickStreetTarget(i);
+      }
+    } else {
+      // Zombies visible — stay in shelter, reset leave timer
+      wanderTimer[i] = SOLDIER_SHELTER_LEAVE_FRAMES;
+    }
+
+    // Wander inside shelter (same as saved citizens)
+    const tx = s.x + pad + Math.random() * (s.w - pad * 2);
+    const ty = s.y + pad + Math.random() * (s.h - pad * 2);
+    computeSeek(x, y, tx, ty, SOLDIER_SPEED * 0.3);
+    posX[i] = Math.max(s.x + pad, Math.min(s.x + s.w - pad, x + _vx));
+    posY[i] = Math.max(s.y + pad, Math.min(s.y + s.h - pad, y + _vy));
+    return;
+  }
+
+  // --- RETREAT TO SHELTER — when heavily outnumbered ---
+  if (zombiesInVision >= SOLDIER_SHELTER_RETREAT_RATIO) {
+    let bestSD = SHELTER_DETECTION_RANGE;
+    let bestSI = -1;
+    for (let si = 0; si < shelters.length; si++) {
+      const sd = distToRect(x, y, shelters[si].x, shelters[si].y, shelters[si].w, shelters[si].h);
+      if (sd < bestSD) { bestSD = sd; bestSI = si; }
+    }
+    if (bestSI >= 0) {
+      const s = shelters[bestSI];
+      if (bestSD < SHELTER_ENTRY_DIST) {
+        // Enter shelter
+        shelterIdx[i] = bestSI;
+        posX[i] = s.cx + (Math.random() - 0.5) * (s.w * 0.6);
+        posY[i] = s.cy + (Math.random() - 0.5) * (s.h * 0.6);
+        wanderTimer[i] = SOLDIER_SHELTER_LEAVE_FRAMES;
+        return;
+      }
+      // Move toward shelter
+      computeSeek(x, y, s.cx, s.cy, SOLDIER_SPEED);
+      moveEntity(i, _vx, _vy);
+      return;
+    }
+  }
+
+  // --- NORMAL MOVEMENT ---
   if (nearestZIdx >= 0 && nearestZDist2 > sR2) {
     // Move toward zombie — out of shoot range
     computeSeek(x, y, posX[nearestZIdx], posY[nearestZIdx], SOLDIER_SPEED);
@@ -1192,6 +1256,7 @@ function spawnReinforcements() {
     states[i] = 4;
     soldierCooldown[i] = 0;
     soldierBarricadeCooldown[i] = 0;
+    shelterIdx[i] = -1;
     wanderTimer[i] = 0;
     spawned++;
   }
@@ -1237,6 +1302,7 @@ function simStep() {
     states[idx]      = 2;
     zombieType[idx]  = Math.random() < SPRINTER_CHANCE ? 1 : 0;
     wanderTimer[idx] = 0;
+    shelterIdx[idx]  = -1; // clear shelter if soldier was infected
     stampHeat(posX[idx], posY[idx], 0.15);
   }
 
