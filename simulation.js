@@ -41,7 +41,11 @@ const SHELTER_DETECTION_RANGE = 200;    // px — panicked citizens detect shelt
 const SHELTER_ENTRY_DIST      = 8;      // px — distance from building edge to enter shelter
 
 // Soldiers — AI-controlled defenders that patrol, shoot zombies, and place barricades
-const NUM_SOLDIERS                       = 8;      // auto-spawned at game start
+const SOLDIER_INITIAL_PCT                = 0.01;   // 1% of population at start
+const SOLDIER_MIN                        = 4;      // minimum soldiers regardless of pop
+const SOLDIER_MAX_PCT                    = 0.03;   // hard cap: 3% of initial population
+const SOLDIER_REINFORCE_INTERVAL         = 300;    // frames between reinforcement checks (~5s)
+const SOLDIER_REINFORCE_RATIO            = 2.0;    // zombies:soldiers ratio to trigger reinforcement
 const SOLDIER_SPEED                      = 0.6;    // patrol speed (px/frame)
 const SOLDIER_VISION                     = 180;    // px — zombie detection range
 const SOLDIER_SHOOT_RANGE                = 150;    // px — max shooting distance
@@ -120,6 +124,10 @@ let shotLines = []; // [{x1, y1, x2, y2, ttl}]
 let waveNumber    = 0;
 let waveCalmTimer = 0;   // frames until next wave spawns
 let waveStarted   = false; // true once first zombie exists
+
+// Soldier reinforcement state
+let soldierCap       = 0;  // max soldiers for this game (3% of initial pop)
+let reinforceTimer   = 0;  // countdown to next reinforcement check
 
 let canvasW = 0, canvasH = 0;
 
@@ -715,8 +723,12 @@ function spawnEntities() {
     pickStreetTarget(i);
   }
 
-  // Promote NUM_SOLDIERS random citizens to soldiers
-  const soldierCount = Math.min(NUM_SOLDIERS, numCitizens);
+  // Promote a percentage of citizens to soldiers (1% of pop, min 4)
+  const soldierCount = Math.min(
+    Math.max(SOLDIER_MIN, Math.round(numCitizens * SOLDIER_INITIAL_PCT)),
+    numCitizens - 1 // leave at least 1 citizen
+  );
+  soldierCap = Math.max(soldierCount, Math.round(numCitizens * SOLDIER_MAX_PCT));
   const indices = [];
   for (let i = 0; i < numCitizens; i++) indices.push(i);
   // Fisher-Yates partial shuffle to pick soldierCount random indices
@@ -1120,6 +1132,30 @@ function spawnWave() {
   }
 }
 
+/** Spawn 1–2 soldier reinforcements by recycling dead entity slots. */
+function spawnReinforcements() {
+  // Count current living soldiers
+  let currentSoldiers = 0;
+  for (let i = 0; i < numCitizens; i++) if (states[i] === 4) currentSoldiers++;
+  if (currentSoldiers >= soldierCap) return; // at cap
+
+  const toSpawn = Math.min(2, soldierCap - currentSoldiers);
+  let spawned = 0;
+
+  for (let i = 0; i < numCitizens && spawned < toSpawn; i++) {
+    if (states[i] !== 5) continue; // only recycle dead slots
+    const pos = pickEdgeSpawn();
+    if (!pos) continue;
+    posX[i] = pos.x;
+    posY[i] = pos.y;
+    states[i] = 4;
+    soldierCooldown[i] = 0;
+    soldierBarricadeCooldown[i] = 0;
+    wanderTimer[i] = 0;
+    spawned++;
+  }
+}
+
 // ============================================================
 // GAME LOOP
 // ============================================================
@@ -1175,8 +1211,12 @@ function simStep() {
 
   // 6. Wave spawning — when all zombies are dead but citizens remain
   if (waveStarted) {
-    let nzNow = 0;
-    for (let i = 0; i < numCitizens; i++) if (states[i] === 2) nzNow++;
+    let nzNow = 0, nsolNow = 0;
+    for (let i = 0; i < numCitizens; i++) {
+      if (states[i] === 2) nzNow++;
+      else if (states[i] === 4) nsolNow++;
+    }
+
     if (nzNow === 0) {
       // Count remaining civilians
       let civLeft = 0;
@@ -1188,6 +1228,14 @@ function simStep() {
         } else {
           waveCalmTimer--;
         }
+      }
+    }
+
+    // 7. Soldier reinforcements — spawn when outnumbered
+    if (--reinforceTimer <= 0) {
+      reinforceTimer = SOLDIER_REINFORCE_INTERVAL;
+      if (nsolNow > 0 && nzNow > nsolNow * SOLDIER_REINFORCE_RATIO) {
+        spawnReinforcements();
       }
     }
   }
@@ -1325,6 +1373,7 @@ function init() {
   waveNumber     = 0;
   waveCalmTimer  = 0;
   waveStarted    = false;
+  reinforceTimer = 0;
 
   rafHandle  = requestAnimationFrame(gameLoop);
 }
