@@ -26,6 +26,7 @@
     .row-r .value { color: #e87040; }
     .row-b .value { color: #ff8c00; }
     .row-v .value { color: #00cc44; }
+    .row-sol .value { color: #8b5a2b; }
 
     /* Population slider (inside pz-overlay) */
     .pz-pop {
@@ -177,6 +178,7 @@
     <div class="row-r"><span class="label">RATE      </span><span class="value" id="cnt-rate">0/s</span></div>
     <div class="row-b"><span class="label">WALLS [B] </span><span class="value" id="cnt-barricades">10 left</span></div>
     <div class="row-v"><span class="label">SAVED     </span><span class="value" id="cnt-saved">0</span></div>
+    <div class="row-sol"><span class="label">SOLDIERS  </span><span class="value" id="cnt-soldiers">0</span></div>
   </div>
 
   <canvas id="chart-canvas"></canvas>
@@ -200,8 +202,8 @@
     <p class="pz-sub">select one or more patient zeros</p>
     <div class="pz-pop">
       <span>POPULATION</span>
-      <input type="range" id="pop-slider" min="50" max="1000" value="500" step="50">
-      <span id="cnt-pop">500</span>
+      <input type="range" id="pop-slider" min="50" max="3000" value="1000" step="50">
+      <span id="cnt-pop">1000</span>
     </div>
     <p class="pz-count" id="pz-count"></p>
   </div>

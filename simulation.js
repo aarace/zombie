@@ -5,9 +5,9 @@ import { generateCity, buildStreetMask, renderCity } from './city.js';
 // ============================================================
 // CONFIGURATION — tweak these to change simulation behaviour
 // ============================================================
-let   numCitizens                   = 500;    // total population (adjustable via slider, max 1000)
+let   numCitizens                   = 1000;   // total population (adjustable via slider, max 3000)
 const DOT_RADIUS                    = 2;      // visual radius of every dot (px)
-const CITIZEN_SPEED                 = 1.2;    // px per frame
+const CITIZEN_SPEED                 = 0.8;    // px per frame
 const PANICKED_SPEED_MULTIPLIER     = 2.0;    // multiplier on CITIZEN_SPEED when panicked
 const ZOMBIE_SPEED_MULTIPLIER       = 0.5;    // zombie wander speed multiplier
 const ZOMBIE_CHASE_SPEED_MULTIPLIER = 2.0;    // zombie chase speed multiplier
@@ -40,6 +40,17 @@ const NUM_SHELTERS            = 6;      // buildings designated as shelters
 const SHELTER_DETECTION_RANGE = 200;    // px — panicked citizens detect shelters within this range
 const SHELTER_ENTRY_DIST      = 8;      // px — distance from building edge to enter shelter
 
+// Soldiers — AI-controlled defenders that patrol, shoot zombies, and place barricades
+const NUM_SOLDIERS                       = 8;      // auto-spawned at game start
+const SOLDIER_SPEED                      = 0.6;    // patrol speed (px/frame)
+const SOLDIER_VISION                     = 180;    // px — zombie detection range
+const SOLDIER_SHOOT_RANGE                = 150;    // px — max shooting distance
+const SOLDIER_SHOOT_COOLDOWN             = 90;     // frames between shots (~1.5s at 60fps)
+const SOLDIER_KILL_CHANCE                = 0.7;    // probability of kill per shot
+const SOLDIER_INFECTION_DIST             = 6;      // px — zombie must get very close to infect soldier
+const SOLDIER_BARRICADE_COOLDOWN         = 300;    // frames between barricade placements (~5s)
+const SOLDIER_BARRICADE_ZOMBIE_THRESHOLD = 3;      // minimum zombies nearby to trigger barricade
+
 // ============================================================
 // CANVAS & DOM
 // ============================================================
@@ -59,6 +70,7 @@ const hudTime       = document.getElementById('cnt-time');
 const hudRate       = document.getElementById('cnt-rate');
 const hudBarricades = document.getElementById('cnt-barricades');
 const hudSaved      = document.getElementById('cnt-saved');
+const hudSoldiers   = document.getElementById('cnt-soldiers');
 const endOverlay  = document.getElementById('end-overlay');
 const endTitle    = document.getElementById('end-title');
 const endMessage  = document.getElementById('end-message');
@@ -93,6 +105,9 @@ let mouseX = 0, mouseY = 0;
 
 // Shelter state
 let shelters = []; // [{x, y, w, h, cx, cy}] — buildings designated as safe zones
+
+// Shot visual — brief muzzle flash lines from soldier gunfire
+let shotLines = []; // [{x1, y1, x2, y2, ttl}]
 
 let canvasW = 0, canvasH = 0;
 
@@ -153,10 +168,12 @@ function renderHeatMap() {
 
 // ============================================================
 // ENTITY STATE — parallel typed arrays for cache efficiency
-// state: 0 = citizen, 1 = panicked, 2 = zombie, 3 = saved (in shelter)
+// state: 0 = citizen, 1 = panicked, 2 = zombie, 3 = saved, 4 = soldier, 5 = dead
 // ============================================================
 let posX, posY, targetX, targetY, states, zombieType, wanderTimer, panicTimer;
 let shelterIdx;  // Int8Array — which shelter a saved citizen is inside (-1 = none)
+let soldierCooldown;          // Int16Array — frames until next shot
+let soldierBarricadeCooldown; // Int16Array — frames until next barricade placement
 
 function allocateArrays(n) {
   posX        = new Float32Array(n);
@@ -168,6 +185,8 @@ function allocateArrays(n) {
   wanderTimer = new Int16Array(n);
   panicTimer  = new Int16Array(n);
   shelterIdx  = new Int8Array(n).fill(-1);
+  soldierCooldown          = new Int16Array(n);
+  soldierBarricadeCooldown = new Int16Array(n);
 }
 
 // ============================================================
@@ -204,7 +223,7 @@ function createSprite(r, g, b) {
   return { canvas: oc, half: cx };
 }
 
-let spriteCitizen, spritePanicked, spriteZombie, spriteSprinter, spriteSaved;
+let spriteCitizen, spritePanicked, spriteZombie, spriteSprinter, spriteSaved, spriteSoldier;
 
 function initSprites() {
   spriteCitizen  = createSprite(255, 255, 255);
@@ -212,13 +231,14 @@ function initSprites() {
   spriteZombie   = createSprite(210,  25,  25);
   spriteSprinter = createSprite(255, 100,  30);  // orange-red for sprinters
   spriteSaved    = createSprite( 50, 200,  50);
+  spriteSoldier  = createSprite(139,  90,  43);  // earthy brown
 }
 
 // ============================================================
 // SPATIAL GRID — uniform grid for O(1) neighbour queries
 // Cell size = largest vision radius → at most 3×3 cells to check
 // ============================================================
-const GRID_CELL = Math.max(ZOMBIE_VISION_DISTANCE, CITIZEN_VISION_DISTANCE);
+const GRID_CELL = Math.max(ZOMBIE_VISION_DISTANCE, CITIZEN_VISION_DISTANCE, SOLDIER_VISION);
 let GRID_COLS = 0, GRID_ROWS = 0, gridCells;
 
 function initGrid() {
@@ -630,13 +650,14 @@ function updateZombie(i, toInfect) {
       const cell = gridCells[gr * GRID_COLS + gc];
       for (let k = 0; k < cell.length; k++) {
         const j = cell[k];
-        if (j === i || states[j] === 2 || states[j] === 3) continue; // skip self, other zombies, saved
+        if (j === i || states[j] === 2 || states[j] === 3 || states[j] === 5) continue; // skip self, zombies, saved, dead
 
         const dx = posX[j] - x, dy = posY[j] - y;
         const d2 = dx * dx + dy * dy;
 
-        // Infect if within contact distance
-        if (d2 < iR2) toInfect.add(j);
+        // Infect if within contact distance (soldiers require closer range)
+        const infDist = states[j] === 4 ? SOLDIER_INFECTION_DIST : INFECTION_DISTANCE;
+        if (d2 < infDist * infDist) toInfect.add(j);
 
         // Track nearest visible citizen for chasing
         if (d2 < vR * vR && d2 < nearestDist2) {
@@ -682,9 +703,26 @@ function spawnEntities() {
     pickStreetTarget(i);
   }
 
+  // Promote NUM_SOLDIERS random citizens to soldiers
+  const soldierCount = Math.min(NUM_SOLDIERS, numCitizens);
+  const indices = [];
+  for (let i = 0; i < numCitizens; i++) indices.push(i);
+  // Fisher-Yates partial shuffle to pick soldierCount random indices
+  for (let i = indices.length - 1; i > indices.length - 1 - soldierCount; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  for (let k = 0; k < soldierCount; k++) {
+    const si = indices[indices.length - 1 - k];
+    states[si] = 4;
+    soldierCooldown[si] = 0;
+    soldierBarricadeCooldown[si] = 0;
+  }
+
   // Patient zero — only if configured to auto-spawn
   if (INITIAL_ZOMBIE) {
-    const pz         = (Math.random() * numCitizens) | 0;
+    let pz;
+    do { pz = (Math.random() * numCitizens) | 0; } while (states[pz] === 4);
     states[pz]       = 2;
     zombieType[pz]   = 0;  // patient zero is always normal
     wanderTimer[pz]  = 0;
@@ -737,6 +775,28 @@ function render() {
     simCtx.drawImage(sv.canvas, posX[i] - sv.half, posY[i] - sv.half);
   }
 
+  // Soldiers
+  const so = spriteSoldier;
+  for (let i = 0; i < numCitizens; i++) {
+    if (states[i] !== 4) continue;
+    simCtx.drawImage(so.canvas, posX[i] - so.half, posY[i] - so.half);
+  }
+
+  // Shot lines (muzzle flash)
+  if (shotLines.length > 0) {
+    simCtx.save();
+    simCtx.strokeStyle = '#ffff44';
+    simCtx.lineWidth = 1.5;
+    simCtx.globalAlpha = 0.9;
+    for (const sl of shotLines) {
+      simCtx.beginPath();
+      simCtx.moveTo(sl.x1, sl.y1);
+      simCtx.lineTo(sl.x2, sl.y2);
+      simCtx.stroke();
+    }
+    simCtx.restore();
+  }
+
   // Barricades
   if (barricades.length > 0) {
     simCtx.strokeStyle = '#ff8c00';
@@ -779,18 +839,21 @@ function renderNightOverlay() {
 // HUD
 // ============================================================
 function updateHUD() {
-  let nc = 0, np = 0, nz = 0, ns = 0;
+  let nc = 0, np = 0, nz = 0, ns = 0, nsol = 0;
   for (let i = 0; i < numCitizens; i++) {
     const s = states[i];
     if (s === 0)      nc++;
     else if (s === 1) np++;
     else if (s === 2) nz++;
-    else              ns++;
+    else if (s === 3) ns++;
+    else if (s === 4) nsol++;
+    // state 5 = dead, not counted
   }
   hudCitizens.textContent = nc;
   hudPanicked.textContent = np;
   hudZombies.textContent  = nz;
   hudSaved.textContent    = ns;
+  hudSoldiers.textContent = nsol;
 
   // Time-of-day indicator
   let timeLabel, timeColor;
@@ -831,7 +894,7 @@ function updateHUD() {
     renderChart();
   }
 
-  return { nz, ns };
+  return { nc, np, nz, ns, nsol };
 }
 
 function renderChart() {
@@ -901,6 +964,101 @@ function renderChart() {
 }
 
 // ============================================================
+// SOLDIER UPDATE — scan, shoot, place barricades, patrol
+// ============================================================
+function updateSoldier(i, toKill) {
+  const x = posX[i], y = posY[i];
+  const vR = SOLDIER_VISION;
+  const sR2 = SOLDIER_SHOOT_RANGE * SOLDIER_SHOOT_RANGE;
+
+  // Scan for zombies in vision range
+  let nearestZDist2 = Infinity;
+  let nearestZIdx = -1;
+  let zombiesInVision = 0;
+  let avgZX = 0, avgZY = 0;
+
+  const minCol = Math.max(0, ((x - vR) / GRID_CELL) | 0);
+  const maxCol = Math.min(GRID_COLS - 1, ((x + vR) / GRID_CELL) | 0);
+  const minRow = Math.max(0, ((y - vR) / GRID_CELL) | 0);
+  const maxRow = Math.min(GRID_ROWS - 1, ((y + vR) / GRID_CELL) | 0);
+
+  for (let gr = minRow; gr <= maxRow; gr++) {
+    for (let gc = minCol; gc <= maxCol; gc++) {
+      const cell = gridCells[gr * GRID_COLS + gc];
+      for (let k = 0; k < cell.length; k++) {
+        const j = cell[k];
+        if (states[j] !== 2) continue; // only interested in zombies
+        const dx = posX[j] - x, dy = posY[j] - y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < vR * vR) {
+          zombiesInVision++;
+          avgZX += posX[j];
+          avgZY += posY[j];
+          if (d2 < nearestZDist2) {
+            nearestZDist2 = d2;
+            nearestZIdx = j;
+          }
+        }
+      }
+    }
+  }
+
+  // Shoot nearest zombie if in range, cooldown expired, and line of sight clear
+  if (nearestZIdx >= 0 && nearestZDist2 <= sR2 && soldierCooldown[i] <= 0) {
+    if (hasLineOfSight(x, y, posX[nearestZIdx], posY[nearestZIdx])) {
+      if (Math.random() < SOLDIER_KILL_CHANCE) {
+        toKill.add(nearestZIdx);
+      }
+      shotLines.push({
+        x1: x, y1: y,
+        x2: posX[nearestZIdx], y2: posY[nearestZIdx],
+        ttl: 8
+      });
+      soldierCooldown[i] = SOLDIER_SHOOT_COOLDOWN;
+    }
+  }
+
+  // Barricade placement — cluster of zombies approaching
+  if (zombiesInVision >= SOLDIER_BARRICADE_ZOMBIE_THRESHOLD
+      && soldierBarricadeCooldown[i] <= 0
+      && barricades.length < MAX_BARRICADES) {
+    avgZX /= zombiesInVision;
+    avgZY /= zombiesInVision;
+    // Place barricade 40% of the way toward zombie cluster
+    const bx = x + (avgZX - x) * 0.4;
+    const by = y + (avgZY - y) * 0.4;
+    const b = computeStreetBarricade(bx, by);
+    if (b) {
+      barricades.push(b);
+      stampBarricadeLine(b.x1, b.y1, b.x2, b.y2);
+      soldierBarricadeCooldown[i] = SOLDIER_BARRICADE_COOLDOWN;
+    }
+  }
+
+  // Decrement cooldowns
+  if (soldierCooldown[i] > 0) soldierCooldown[i]--;
+  if (soldierBarricadeCooldown[i] > 0) soldierBarricadeCooldown[i]--;
+
+  // Movement: approach if out of range, hold position if in range, patrol if no threats
+  if (nearestZIdx >= 0 && nearestZDist2 > sR2) {
+    // Move toward zombie — out of shoot range
+    computeSeek(x, y, posX[nearestZIdx], posY[nearestZIdx], SOLDIER_SPEED);
+  } else if (nearestZIdx < 0) {
+    // No threats — patrol streets
+    if (wanderTimer[i] <= 0) pickStreetTarget(i);
+    wanderTimer[i]--;
+    computeSeek(x, y, targetX[i], targetY[i], SOLDIER_SPEED);
+  } else {
+    // In firing range — hold position with slight drift
+    if (wanderTimer[i] <= 0) pickStreetTarget(i);
+    wanderTimer[i]--;
+    computeSeek(x, y, targetX[i], targetY[i], SOLDIER_SPEED * 0.3);
+  }
+
+  moveEntity(i, _vx, _vy);
+}
+
+// ============================================================
 // GAME LOOP
 // ============================================================
 let rafHandle  = null;
@@ -923,20 +1081,34 @@ function simStep() {
   // 1. Rebuild spatial grid each frame
   rebuildGrid();
 
-  // 2. Update all entities; collect infections in a Set (deferred)
+  // 2. Update all entities; collect infections and kills in Sets (deferred)
   const toInfect = new Set();
+  const toKill   = new Set();
   for (let i = 0; i < numCitizens; i++) {
-    if (states[i] === 2) updateZombie(i, toInfect);
-    else                  updateCitizen(i);
+    const st = states[i];
+    if (st === 5) continue; // dead — skip
+    if (st === 2)      updateZombie(i, toInfect);
+    else if (st === 4) updateSoldier(i, toKill);
+    else               updateCitizen(i);
   }
 
   // 3. Apply infections after full update (avoids mid-loop state mutation)
   for (const idx of toInfect) {
-    if (states[idx] === 3) continue; // reached shelter this frame — immune
+    if (states[idx] === 3 || states[idx] === 5) continue; // sheltered or dead — immune
     states[idx]      = 2;
     zombieType[idx]  = Math.random() < SPRINTER_CHANCE ? 1 : 0;
     wanderTimer[idx] = 0;
-    stampHeat(posX[idx], posY[idx], 0.15);  // big stamp on new infection
+    stampHeat(posX[idx], posY[idx], 0.15);
+  }
+
+  // 4. Apply soldier kills
+  for (const idx of toKill) {
+    if (states[idx] === 2) states[idx] = 5; // zombie -> dead
+  }
+
+  // 5. Decay shot line TTLs
+  for (let s = shotLines.length - 1; s >= 0; s--) {
+    if (--shotLines[s].ttl <= 0) shotLines.splice(s, 1);
   }
 }
 
@@ -958,10 +1130,10 @@ function gameLoop() {
   renderHeatMap();
   render();
   renderNightOverlay();
-  const { nz, ns } = updateHUD();
+  const { nc, np, nz, ns, nsol } = updateHUD();
 
-  // 5. Win condition — all citizens are either zombies or saved
-  if (nz + ns >= numCitizens) {
+  // 5. Win condition — no civilians left (all are zombie, saved, soldier, or dead)
+  if (nc + np === 0 && frameCount > 0) {
     const secs = (frameCount / 60).toFixed(0);
 
     if (ns > 0) {
@@ -970,14 +1142,14 @@ function gameLoop() {
       endTitle.style.textShadow = '0 0 40px rgba(30, 255, 60, 0.9), 0 0 80px rgba(0, 200, 50, 0.4)';
       endOverlay.style.background = 'rgba(0, 60, 20, 0.72)';
       endMessage.textContent =
-        `${ns} saved, ${nz} infected — ${frameCount} frames (~${secs}s)`;
+        `${ns} saved, ${nsol} soldiers, ${nz} infected — ${frameCount} frames (~${secs}s)`;
     } else {
       // Total infection
       endTitle.textContent = 'INFECTION COMPLETE';
       endTitle.style.textShadow = '0 0 40px rgba(255, 30, 30, 0.9), 0 0 80px rgba(255, 0, 0, 0.4)';
       endOverlay.style.background = 'rgba(90, 0, 0, 0.72)';
       endMessage.textContent =
-        `All ${numCitizens} citizens infected — ${frameCount} frames (~${secs}s)`;
+        `All overrun — ${nz} infected — ${frameCount} frames (~${secs}s)`;
     }
 
     endOverlay.style.display = 'flex';
@@ -1008,7 +1180,7 @@ function init() {
 
   // Read population from slider, or randomize in demo mode
   if (demoMode) {
-    numCitizens = 200 + ((Math.random() * 16) | 0) * 50; // 200–950 in steps of 50
+    numCitizens = 400 + ((Math.random() * 53) | 0) * 50; // 400–3000 in steps of 50
   } else {
     const popSlider = document.getElementById('pop-slider');
     if (popSlider) {
@@ -1042,12 +1214,11 @@ function init() {
     pzOverlay.style.display = 'none';
     const pzCount_ = 1 + ((Math.random() * 3) | 0);
     for (let p = 0; p < pzCount_; p++) {
-      const idx = (Math.random() * numCitizens) | 0;
-      if (states[idx] !== 2) {
-        states[idx]      = 2;
-        zombieType[idx]  = 0;
-        wanderTimer[idx] = 0;
-      }
+      let idx;
+      do { idx = (Math.random() * numCitizens) | 0; } while (states[idx] === 2 || states[idx] === 4);
+      states[idx]      = 2;
+      zombieType[idx]  = 0;
+      wanderTimer[idx] = 0;
     }
   } else {
     waitingForPatientZero = !INITIAL_ZOMBIE;
@@ -1066,6 +1237,7 @@ function init() {
   daylight       = 1.0;
   barricades     = [];
   barricadeMode  = false;
+  shotLines      = [];
 
   rafHandle  = requestAnimationFrame(gameLoop);
 }
