@@ -22,6 +22,13 @@ const SPRINTER_CHASE_SPEED_MULT     = 3.0;    // sprinters chase much faster
 const SPRINTER_WANDER_SPEED_MULT    = 0.8;    // sprinters wander slightly faster
 const SPRINTER_VISION_DISTANCE      = 80;     // px — sprinters have shorter vision
 
+// Day/night cycle
+const DAY_NIGHT_CYCLE_LENGTH        = 1800;  // frames per full cycle (~30s at 60fps)
+const MAX_NIGHT_OPACITY             = 0.55;  // darkness overlay max opacity
+const NIGHT_CITIZEN_VISION_MULT     = 0.35;  // citizen vision at midnight (fraction of base)
+const NIGHT_ZOMBIE_VISION_MULT      = 0.70;  // zombie vision at midnight
+const NIGHT_ZOMBIE_SPEED_MULT       = 1.35;  // zombie speed multiplier at midnight
+
 // ============================================================
 // CANVAS & DOM
 // ============================================================
@@ -31,6 +38,8 @@ const simCanvas  = document.getElementById('sim-canvas');
 const cityCtx    = cityCanvas.getContext('2d');
 const heatCtx    = heatCanvas.getContext('2d');
 const simCtx     = simCanvas.getContext('2d');
+const nightCanvas = document.getElementById('night-canvas');
+const nightCtx    = nightCanvas.getContext('2d');
 
 const hudCitizens = document.getElementById('cnt-citizens');
 const hudPanicked = document.getElementById('cnt-panicked');
@@ -58,6 +67,9 @@ const HEAT_CELL = 8;  // px per heat grid cell
 let heatCols = 0, heatRows = 0;
 let heatGrid;  // Float32Array — accumulated infection intensity
 
+// Day/night cycle state
+let daylight = 1.0; // 1.0 = noon, 0.0 = midnight
+
 let canvasW = 0, canvasH = 0;
 
 function setupCanvases() {
@@ -66,6 +78,7 @@ function setupCanvases() {
   cityCanvas.width  = canvasW;  cityCanvas.height = canvasH;
   heatCanvas.width  = canvasW;  heatCanvas.height = canvasH;
   simCanvas.width   = canvasW;  simCanvas.height  = canvasH;
+  nightCanvas.width = canvasW;  nightCanvas.height = canvasH;
 }
 
 function initHeatMap() {
@@ -321,7 +334,7 @@ function computeSeek(ix, iy, tx, ty, speed) {
 // ============================================================
 function updateCitizen(i) {
   const x  = posX[i], y  = posY[i];
-  const vR = CITIZEN_VISION_DISTANCE;
+  const vR = CITIZEN_VISION_DISTANCE * (NIGHT_CITIZEN_VISION_MULT + daylight * (1 - NIGHT_CITIZEN_VISION_MULT));
 
   // Scan nearby grid cells for zombies
   let nearestZDist2 = Infinity;
@@ -383,8 +396,10 @@ function updateCitizen(i) {
 function updateZombie(i, toInfect) {
   const x    = posX[i], y = posY[i];
   const isSprinter = zombieType[i] === 1;
-  const vR   = isSprinter ? SPRINTER_VISION_DISTANCE : ZOMBIE_VISION_DISTANCE;
+  const nightVis = NIGHT_ZOMBIE_VISION_MULT + daylight * (1 - NIGHT_ZOMBIE_VISION_MULT);
+  const vR   = (isSprinter ? SPRINTER_VISION_DISTANCE : ZOMBIE_VISION_DISTANCE) * nightVis;
   const iR2  = INFECTION_DISTANCE * INFECTION_DISTANCE;
+  const nightSpd = 1 + (1 - daylight) * (NIGHT_ZOMBIE_SPEED_MULT - 1);
 
   let nearestDist2 = Infinity;
   let nearestTX = 0, nearestTY = 0;
@@ -419,13 +434,13 @@ function updateZombie(i, toInfect) {
   if (nearestDist2 < Infinity) {
     // --- CHASE MODE ---
     const chaseMult = isSprinter ? SPRINTER_CHASE_SPEED_MULT : ZOMBIE_CHASE_SPEED_MULTIPLIER;
-    computeSeek(x, y, nearestTX, nearestTY, chaseMult * CITIZEN_SPEED);
+    computeSeek(x, y, nearestTX, nearestTY, chaseMult * CITIZEN_SPEED * nightSpd);
   } else {
     // --- WANDER MODE ---
     if (wanderTimer[i] <= 0) pickStreetTarget(i);
     wanderTimer[i]--;
     const wanderMult = isSprinter ? SPRINTER_WANDER_SPEED_MULT : ZOMBIE_SPEED_MULTIPLIER;
-    computeSeek(x, y, targetX[i], targetY[i], wanderMult * CITIZEN_SPEED);
+    computeSeek(x, y, targetX[i], targetY[i], wanderMult * CITIZEN_SPEED * nightSpd);
   }
 
   moveEntity(i, _vx, _vy);
@@ -502,6 +517,18 @@ function render() {
 }
 
 // ============================================================
+// NIGHT OVERLAY — dark blue tint proportional to darkness
+// ============================================================
+function renderNightOverlay() {
+  nightCtx.clearRect(0, 0, canvasW, canvasH);
+  const darkness = (1 - daylight) * MAX_NIGHT_OPACITY;
+  if (darkness > 0.01) {
+    nightCtx.fillStyle = `rgba(5, 5, 25, ${darkness})`;
+    nightCtx.fillRect(0, 0, canvasW, canvasH);
+  }
+}
+
+// ============================================================
 // HUD
 // ============================================================
 function updateHUD() {
@@ -516,11 +543,19 @@ function updateHUD() {
   hudPanicked.textContent = np;
   hudZombies.textContent  = nz;
 
-  // Elapsed time
-  const elapsed = (performance.now() - startTime) / 1000;
-  hudTime.textContent = elapsed < 60
-    ? elapsed.toFixed(1) + 's'
-    : (elapsed / 60).toFixed(1) + 'm';
+  // Time-of-day indicator
+  let timeLabel, timeColor;
+  if (daylight > 0.75) {
+    timeLabel = 'DAY';   timeColor = '#ffd700';
+  } else if (daylight > 0.35) {
+    const sineVal = Math.sin(frameCount * 2 * Math.PI / DAY_NIGHT_CYCLE_LENGTH);
+    timeLabel = sineVal > 0 ? 'DUSK' : 'DAWN';
+    timeColor = '#cc7722';
+  } else {
+    timeLabel = 'NIGHT'; timeColor = '#4466aa';
+  }
+  hudTime.textContent = timeLabel;
+  hudTime.style.color = timeColor;
 
   // Infection rate (updated every 500ms)
   const now = performance.now();
@@ -594,6 +629,9 @@ const zombieHistory  = [];  // sampled zombie counts for the chart
 function simStep() {
   frameCount++;
 
+  // 0. Update day/night cycle
+  daylight = 0.5 + 0.5 * Math.cos(frameCount * 2 * Math.PI / DAY_NIGHT_CYCLE_LENGTH);
+
   // 1. Rebuild spatial grid each frame
   rebuildGrid();
 
@@ -627,9 +665,10 @@ function gameLoop() {
     }
   }
 
-  // 4. Render heat map and entities
+  // 4. Render heat map, entities, night overlay, and update HUD
   renderHeatMap();
   render();
+  renderNightOverlay();
   const nz = updateHUD();
 
   // 5. Win condition
@@ -674,6 +713,7 @@ function init() {
   lastRateTime    = startTime;
   currentRate     = 0;
   zombieHistory.length = 0;
+  daylight   = 1.0;
 
   rafHandle  = requestAnimationFrame(gameLoop);
 }
