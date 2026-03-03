@@ -16,6 +16,12 @@ const ZOMBIE_VISION_DISTANCE        = 150;    // px — how far a zombie can see
 const INFECTION_DISTANCE            = 10;     // px — contact distance for infection
 const INITIAL_ZOMBIE                = true;  // true = auto-spawn patient zero; false = click a citizen to start
 
+// Zombie types: 0 = normal, 1 = sprinter
+const SPRINTER_CHANCE               = 0.10;   // 10% of new zombies become sprinters
+const SPRINTER_CHASE_SPEED_MULT     = 3.0;    // sprinters chase much faster
+const SPRINTER_WANDER_SPEED_MULT    = 0.8;    // sprinters wander slightly faster
+const SPRINTER_VISION_DISTANCE      = 80;     // px — sprinters have shorter vision
+
 // ============================================================
 // CANVAS & DOM
 // ============================================================
@@ -56,6 +62,7 @@ const posY        = new Float32Array(NUM_CITIZENS);
 const targetX     = new Float32Array(NUM_CITIZENS);
 const targetY     = new Float32Array(NUM_CITIZENS);
 const states      = new Uint8Array(NUM_CITIZENS);
+const zombieType  = new Uint8Array(NUM_CITIZENS);  // 0 = normal, 1 = sprinter
 const wanderTimer = new Int16Array(NUM_CITIZENS);
 const panicTimer  = new Int16Array(NUM_CITIZENS);
 
@@ -93,12 +100,13 @@ function createSprite(r, g, b) {
   return { canvas: oc, half: cx };
 }
 
-let spriteCitizen, spritePanicked, spriteZombie;
+let spriteCitizen, spritePanicked, spriteZombie, spriteSprinter;
 
 function initSprites() {
   spriteCitizen  = createSprite(255, 255, 255);
   spritePanicked = createSprite(255, 215,   0);
   spriteZombie   = createSprite(210,  25,  25);
+  spriteSprinter = createSprite(255, 100,  30);  // orange-red for sprinters
 }
 
 // ============================================================
@@ -312,9 +320,10 @@ function updateCitizen(i) {
 // ZOMBIE UPDATE
 // ============================================================
 function updateZombie(i, toInfect) {
-  const x   = posX[i], y   = posY[i];
-  const vR  = ZOMBIE_VISION_DISTANCE;
-  const iR2 = INFECTION_DISTANCE * INFECTION_DISTANCE;
+  const x    = posX[i], y = posY[i];
+  const isSprinter = zombieType[i] === 1;
+  const vR   = isSprinter ? SPRINTER_VISION_DISTANCE : ZOMBIE_VISION_DISTANCE;
+  const iR2  = INFECTION_DISTANCE * INFECTION_DISTANCE;
 
   let nearestDist2 = Infinity;
   let nearestTX = 0, nearestTY = 0;
@@ -348,12 +357,14 @@ function updateZombie(i, toInfect) {
 
   if (nearestDist2 < Infinity) {
     // --- CHASE MODE ---
-    computeSeek(x, y, nearestTX, nearestTY, ZOMBIE_CHASE_SPEED_MULTIPLIER * CITIZEN_SPEED);
+    const chaseMult = isSprinter ? SPRINTER_CHASE_SPEED_MULT : ZOMBIE_CHASE_SPEED_MULTIPLIER;
+    computeSeek(x, y, nearestTX, nearestTY, chaseMult * CITIZEN_SPEED);
   } else {
     // --- WANDER MODE ---
     if (wanderTimer[i] <= 0) pickStreetTarget(i);
     wanderTimer[i]--;
-    computeSeek(x, y, targetX[i], targetY[i], ZOMBIE_SPEED_MULTIPLIER * CITIZEN_SPEED);
+    const wanderMult = isSprinter ? SPRINTER_WANDER_SPEED_MULT : ZOMBIE_SPEED_MULTIPLIER;
+    computeSeek(x, y, targetX[i], targetY[i], wanderMult * CITIZEN_SPEED);
   }
 
   moveEntity(i, _vx, _vy);
@@ -381,9 +392,10 @@ function spawnEntities() {
 
   // Patient zero — only if configured to auto-spawn
   if (INITIAL_ZOMBIE) {
-    const pz        = (Math.random() * NUM_CITIZENS) | 0;
-    states[pz]      = 2;
-    wanderTimer[pz] = 0;
+    const pz         = (Math.random() * NUM_CITIZENS) | 0;
+    states[pz]       = 2;
+    zombieType[pz]   = 0;  // patient zero is always normal
+    wanderTimer[pz]  = 0;
   }
 }
 
@@ -399,6 +411,7 @@ function infectNearestCitizen(mx, my) {
   }
   if (bestIdx !== -1) {
     states[bestIdx]      = 2;
+    zombieType[bestIdx]  = 0;  // manually selected zombies are normal
     wanderTimer[bestIdx] = 0;
   }
 }
@@ -409,7 +422,8 @@ function infectNearestCitizen(mx, my) {
 function render() {
   simCtx.clearRect(0, 0, canvasW, canvasH);
 
-  const sc = spriteCitizen,  sp = spritePanicked,  sz = spriteZombie;
+  const sc = spriteCitizen,  sp = spritePanicked;
+  const sz = spriteZombie,   ss = spriteSprinter;
 
   for (let i = 0; i < NUM_CITIZENS; i++) {
     if (states[i] !== 0) continue;
@@ -421,7 +435,8 @@ function render() {
   }
   for (let i = 0; i < NUM_CITIZENS; i++) {
     if (states[i] !== 2) continue;
-    simCtx.drawImage(sz.canvas, posX[i] - sz.half, posY[i] - sz.half);
+    const spr = zombieType[i] === 1 ? ss : sz;
+    simCtx.drawImage(spr.canvas, posX[i] - spr.half, posY[i] - spr.half);
   }
 }
 
@@ -464,6 +479,7 @@ function simStep() {
   // 3. Apply infections after full update (avoids mid-loop state mutation)
   for (const idx of toInfect) {
     states[idx]      = 2;
+    zombieType[idx]  = Math.random() < SPRINTER_CHANCE ? 1 : 0;
     wanderTimer[idx] = 0;
   }
 }
