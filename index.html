@@ -25,6 +25,7 @@
     .row-t .value { color: #888; }
     .row-r .value { color: #e87040; }
     .row-b .value { color: #ff8c00; }
+    .row-v .value { color: #00cc44; }
 
     #chart-canvas {
       position: absolute;
@@ -114,12 +115,13 @@
     <div class="row-t"><span class="label">TIME      </span><span class="value" id="cnt-time">DAY</span></div>
     <div class="row-r"><span class="label">RATE      </span><span class="value" id="cnt-rate">0/s</span></div>
     <div class="row-b"><span class="label">WALLS [B] </span><span class="value" id="cnt-barricades">10 left</span></div>
+    <div class="row-v"><span class="label">SAVED     </span><span class="value" id="cnt-saved">0</span></div>
   </div>
 
   <canvas id="chart-canvas"></canvas>
 
   <div id="end-overlay">
-    <h1>INFECTION COMPLETE</h1>
+    <h1 id="end-title">INFECTION COMPLETE</h1>
     <p id="end-message"></p>
     <p class="hint">Click or press any key to restart</p>
   </div>
