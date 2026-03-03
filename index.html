@@ -27,9 +27,47 @@
     .row-b .value { color: #ff8c00; }
     .row-v .value { color: #00cc44; }
 
+    /* Population slider (inside pz-overlay) */
+    .pz-pop {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      pointer-events: auto;  /* clickable despite overlay being pass-through */
+      color: rgba(160, 160, 160, 0.7);
+      font: 13px/1 'Courier New', monospace;
+      letter-spacing: 1px;
+    }
+    .pz-pop #cnt-pop { color: rgba(220, 220, 220, 0.9); min-width: 2.5em; }
+    #pop-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 140px;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+    #pop-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: #999;
+      cursor: pointer;
+    }
+    #pop-slider::-moz-range-thumb {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: #999;
+      border: none;
+      cursor: pointer;
+    }
+
     #chart-canvas {
       position: absolute;
-      bottom: 14px;
+      top: 14px;
+      left: auto;
       right: 14px;
       width: 200px;
       height: 80px;
@@ -40,6 +78,29 @@
     }
 
     #heat-canvas { opacity: 0.5; }
+
+    /* Help / key bindings — bottom-right */
+    #help-box {
+      position: absolute;
+      bottom: 14px;
+      right: 14px;
+      left: auto;
+      top: auto;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid #222;
+      border-radius: 3px;
+      padding: 8px 10px;
+      font: 11px/1.7 'Courier New', monospace;
+      pointer-events: none;
+      user-select: none;
+    }
+    .help-row { white-space: nowrap; }
+    .help-key {
+      display: inline-block;
+      min-width: 5ch;
+      color: rgba(220, 220, 220, 0.7);
+    }
+    .help-desc { color: rgba(120, 120, 120, 0.7); }
 
     #end-overlay {
       display: none;
@@ -126,9 +187,22 @@
     <p class="hint">Click or press any key to restart</p>
   </div>
 
+  <div id="help-box">
+    <div class="help-row"><span class="help-key">1 2 3</span> <span class="help-desc">speed (1x 2x 5x)</span></div>
+    <div class="help-row"><span class="help-key">SPACE</span> <span class="help-desc">pause / resume</span></div>
+    <div class="help-row"><span class="help-key">B</span> <span class="help-desc">barricade mode</span></div>
+    <div class="help-row"><span class="help-key">ESC</span> <span class="help-desc">exit barricade</span></div>
+    <div class="help-row"><span class="help-key">H</span> <span class="help-desc">toggle heat map</span></div>
+  </div>
+
   <div id="pz-overlay">
     <p class="pz-main">CLICK CITIZENS TO INFECT</p>
     <p class="pz-sub">select one or more patient zeros</p>
+    <div class="pz-pop">
+      <span>POPULATION</span>
+      <input type="range" id="pop-slider" min="50" max="1000" value="500" step="50">
+      <span id="cnt-pop">500</span>
+    </div>
     <p class="pz-count" id="pz-count"></p>
   </div>
 
