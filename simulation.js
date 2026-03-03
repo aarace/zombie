@@ -33,6 +33,11 @@ const pzOverlay   = document.getElementById('pz-overlay');
 
 let waitingForPatientZero = false;
 
+// Speed control: how many simulation steps per rendered frame
+let simSpeed = 1;
+let paused   = false;
+const hudSpeed = document.getElementById('cnt-speed');
+
 let canvasW = 0, canvasH = 0;
 
 function setupCanvases() {
@@ -443,7 +448,7 @@ function updateHUD() {
 let rafHandle  = null;
 let frameCount = 0;
 
-function gameLoop() {
+function simStep() {
   frameCount++;
 
   // 1. Rebuild spatial grid each frame
@@ -460,6 +465,14 @@ function gameLoop() {
   for (const idx of toInfect) {
     states[idx]      = 2;
     wanderTimer[idx] = 0;
+  }
+}
+
+function gameLoop() {
+  if (!paused) {
+    for (let s = 0; s < simSpeed; s++) {
+      simStep();
+    }
   }
 
   // 4. Render and update HUD
@@ -516,9 +529,21 @@ window.addEventListener('click', (e) => {
   }
 });
 
-// Keydown: only restarts after game-over (no position, can't select a citizen)
-window.addEventListener('keydown', () => {
-  if (endOverlay.style.display !== 'none') init();
+// Keydown: speed controls + restart after game-over
+window.addEventListener('keydown', (e) => {
+  if (endOverlay.style.display !== 'none') { init(); return; }
+
+  switch (e.key) {
+    case '1': simSpeed = 1; paused = false; break;
+    case '2': simSpeed = 2; paused = false; break;
+    case '3': simSpeed = 5; paused = false; break;
+    case ' ':
+      e.preventDefault();
+      paused = !paused;
+      break;
+    default: return;
+  }
+  hudSpeed.textContent = paused ? '||' : simSpeed + 'x';
 });
 
 // Restart on resize (city proportions change with canvas dimensions)
