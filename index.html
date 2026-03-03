@@ -21,6 +21,7 @@
     .row-c .value { color: #d8d8d8; }
     .row-p .value { color: #ffd700; }
     .row-z .value { color: #cc2222; }
+    .row-t .value { color: #ffd700; }
 
     #end-overlay {
       display: none;
@@ -78,12 +79,14 @@
 </head>
 <body>
   <canvas id="city-canvas"></canvas>
+  <canvas id="night-canvas"></canvas>
   <canvas id="sim-canvas"></canvas>
 
   <div id="hud">
     <div class="row-c"><span class="label">CITIZENS  </span><span class="value" id="cnt-citizens">0</span></div>
     <div class="row-p"><span class="label">PANICKED  </span><span class="value" id="cnt-panicked">0</span></div>
     <div class="row-z"><span class="label">ZOMBIES   </span><span class="value" id="cnt-zombies">0</span></div>
+    <div class="row-t"><span class="label">TIME      </span><span class="value" id="cnt-time">DAY</span></div>
   </div>
 
   <div id="end-overlay">

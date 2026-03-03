@@ -16,6 +16,13 @@ const ZOMBIE_VISION_DISTANCE        = 150;    // px — how far a zombie can see
 const INFECTION_DISTANCE            = 10;     // px — contact distance for infection
 const INITIAL_ZOMBIE                = true;  // true = auto-spawn patient zero; false = click a citizen to start
 
+// Day/night cycle
+const DAY_NIGHT_CYCLE_LENGTH        = 1800;  // frames per full cycle (~30s at 60fps)
+const MAX_NIGHT_OPACITY             = 0.55;  // darkness overlay max opacity
+const NIGHT_CITIZEN_VISION_MULT     = 0.35;  // citizen vision at midnight (fraction of base)
+const NIGHT_ZOMBIE_VISION_MULT      = 0.70;  // zombie vision at midnight
+const NIGHT_ZOMBIE_SPEED_MULT       = 1.35;  // zombie speed multiplier at midnight
+
 // ============================================================
 // CANVAS & DOM
 // ============================================================
@@ -23,15 +30,19 @@ const cityCanvas = document.getElementById('city-canvas');
 const simCanvas  = document.getElementById('sim-canvas');
 const cityCtx    = cityCanvas.getContext('2d');
 const simCtx     = simCanvas.getContext('2d');
+const nightCanvas = document.getElementById('night-canvas');
+const nightCtx    = nightCanvas.getContext('2d');
 
 const hudCitizens = document.getElementById('cnt-citizens');
 const hudPanicked = document.getElementById('cnt-panicked');
 const hudZombies  = document.getElementById('cnt-zombies');
+const hudTime     = document.getElementById('cnt-time');
 const endOverlay  = document.getElementById('end-overlay');
 const endMessage  = document.getElementById('end-message');
 const pzOverlay   = document.getElementById('pz-overlay');
 
 let waitingForPatientZero = false;
+let daylight = 1.0; // 1.0 = noon, 0.0 = midnight
 
 let canvasW = 0, canvasH = 0;
 
@@ -40,6 +51,7 @@ function setupCanvases() {
   canvasH = window.innerHeight;
   cityCanvas.width  = canvasW;  cityCanvas.height = canvasH;
   simCanvas.width   = canvasW;  simCanvas.height  = canvasH;
+  nightCanvas.width = canvasW;  nightCanvas.height = canvasH;
 }
 
 // ============================================================
@@ -247,7 +259,7 @@ function computeSeek(ix, iy, tx, ty, speed) {
 // ============================================================
 function updateCitizen(i) {
   const x  = posX[i], y  = posY[i];
-  const vR = CITIZEN_VISION_DISTANCE;
+  const vR = CITIZEN_VISION_DISTANCE * (NIGHT_CITIZEN_VISION_MULT + daylight * (1 - NIGHT_CITIZEN_VISION_MULT));
 
   // Scan nearby grid cells for zombies
   let nearestZDist2 = Infinity;
@@ -308,8 +320,9 @@ function updateCitizen(i) {
 // ============================================================
 function updateZombie(i, toInfect) {
   const x   = posX[i], y   = posY[i];
-  const vR  = ZOMBIE_VISION_DISTANCE;
+  const vR  = ZOMBIE_VISION_DISTANCE * (NIGHT_ZOMBIE_VISION_MULT + daylight * (1 - NIGHT_ZOMBIE_VISION_MULT));
   const iR2 = INFECTION_DISTANCE * INFECTION_DISTANCE;
+  const nightSpd = 1 + (1 - daylight) * (NIGHT_ZOMBIE_SPEED_MULT - 1);
 
   let nearestDist2 = Infinity;
   let nearestTX = 0, nearestTY = 0;
@@ -343,12 +356,12 @@ function updateZombie(i, toInfect) {
 
   if (nearestDist2 < Infinity) {
     // --- CHASE MODE ---
-    computeSeek(x, y, nearestTX, nearestTY, ZOMBIE_CHASE_SPEED_MULTIPLIER * CITIZEN_SPEED);
+    computeSeek(x, y, nearestTX, nearestTY, ZOMBIE_CHASE_SPEED_MULTIPLIER * CITIZEN_SPEED * nightSpd);
   } else {
     // --- WANDER MODE ---
     if (wanderTimer[i] <= 0) pickStreetTarget(i);
     wanderTimer[i]--;
-    computeSeek(x, y, targetX[i], targetY[i], ZOMBIE_SPEED_MULTIPLIER * CITIZEN_SPEED);
+    computeSeek(x, y, targetX[i], targetY[i], ZOMBIE_SPEED_MULTIPLIER * CITIZEN_SPEED * nightSpd);
   }
 
   moveEntity(i, _vx, _vy);
@@ -421,6 +434,18 @@ function render() {
 }
 
 // ============================================================
+// NIGHT OVERLAY — dark blue tint proportional to darkness
+// ============================================================
+function renderNightOverlay() {
+  nightCtx.clearRect(0, 0, canvasW, canvasH);
+  const darkness = (1 - daylight) * MAX_NIGHT_OPACITY;
+  if (darkness > 0.01) {
+    nightCtx.fillStyle = `rgba(5, 5, 25, ${darkness})`;
+    nightCtx.fillRect(0, 0, canvasW, canvasH);
+  }
+}
+
+// ============================================================
 // HUD
 // ============================================================
 function updateHUD() {
@@ -434,6 +459,21 @@ function updateHUD() {
   hudCitizens.textContent = nc;
   hudPanicked.textContent = np;
   hudZombies.textContent  = nz;
+
+  // Time-of-day indicator
+  let timeLabel, timeColor;
+  if (daylight > 0.75) {
+    timeLabel = 'DAY';   timeColor = '#ffd700';
+  } else if (daylight > 0.35) {
+    const sineVal = Math.sin(frameCount * 2 * Math.PI / DAY_NIGHT_CYCLE_LENGTH);
+    timeLabel = sineVal > 0 ? 'DUSK' : 'DAWN';
+    timeColor = '#cc7722';
+  } else {
+    timeLabel = 'NIGHT'; timeColor = '#4466aa';
+  }
+  hudTime.textContent = timeLabel;
+  hudTime.style.color = timeColor;
+
   return nz;
 }
 
@@ -445,6 +485,9 @@ let frameCount = 0;
 
 function gameLoop() {
   frameCount++;
+
+  // 0. Update day/night cycle
+  daylight = 0.5 + 0.5 * Math.cos(frameCount * 2 * Math.PI / DAY_NIGHT_CYCLE_LENGTH);
 
   // 1. Rebuild spatial grid each frame
   rebuildGrid();
@@ -462,8 +505,9 @@ function gameLoop() {
     wanderTimer[idx] = 0;
   }
 
-  // 4. Render and update HUD
+  // 4. Render, night overlay, and update HUD
   render();
+  renderNightOverlay();
   const nz = updateHUD();
 
   // 5. Win condition
@@ -500,6 +544,7 @@ function init() {
   pzOverlay.style.display = waitingForPatientZero ? 'flex' : 'none';
 
   frameCount = 0;
+  daylight   = 1.0;
   rafHandle  = requestAnimationFrame(gameLoop);
 }
 
