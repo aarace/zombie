@@ -71,6 +71,12 @@
       font: 13px/1 'Courier New', monospace;
       letter-spacing: 1px;
     }
+    #pz-overlay .pz-count {
+      color: rgba(210, 25, 25, 0.9);
+      font: bold 15px/1 'Courier New', monospace;
+      letter-spacing: 1px;
+      margin-top: 6px;
+    }
     @keyframes pz-pulse {
       0%, 100% { opacity: 0.35; }
       50%       { opacity: 1;    }
@@ -95,8 +101,9 @@
   </div>
 
   <div id="pz-overlay">
-    <p class="pz-main">CLICK A CITIZEN</p>
-    <p class="pz-sub">to infect patient zero</p>
+    <p class="pz-main">CLICK CITIZENS TO INFECT</p>
+    <p class="pz-sub">select one or more patient zeros</p>
+    <p class="pz-count" id="pz-count"></p>
   </div>
 
   <!--
