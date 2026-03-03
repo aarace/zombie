@@ -14,7 +14,7 @@ const ZOMBIE_CHASE_SPEED_MULTIPLIER = 2.0;    // zombie chase speed multiplier
 const CITIZEN_VISION_DISTANCE       = 60;    // px — how far a citizen can see a zombie
 const ZOMBIE_VISION_DISTANCE        = 150;    // px — how far a zombie can see a citizen
 const INFECTION_DISTANCE            = 10;     // px — contact distance for infection
-const INITIAL_ZOMBIE                = true;  // true = auto-spawn patient zero; false = click a citizen to start
+const INITIAL_ZOMBIE                = false; // true = auto-spawn patient zero; false = click to select patient zero(s)
 
 // ============================================================
 // CANVAS & DOM
@@ -32,6 +32,8 @@ const endMessage  = document.getElementById('end-message');
 const pzOverlay   = document.getElementById('pz-overlay');
 
 let waitingForPatientZero = false;
+let patientZeroCount = 0;
+const pzCount = document.getElementById('pz-count');
 
 let canvasW = 0, canvasH = 0;
 
@@ -497,7 +499,9 @@ function init() {
   endOverlay.style.display = 'none';
 
   waitingForPatientZero = !INITIAL_ZOMBIE;
+  patientZeroCount = 0;
   pzOverlay.style.display = waitingForPatientZero ? 'flex' : 'none';
+  if (pzCount) pzCount.textContent = '';
 
   frameCount = 0;
   rafHandle  = requestAnimationFrame(gameLoop);
@@ -506,19 +510,23 @@ function init() {
 // Start on load
 init();
 
-// Click: select patient zero (when waiting) OR restart after game-over
+// Click: select patient zero(s) (when waiting) OR restart after game-over
 window.addEventListener('click', (e) => {
   if (endOverlay.style.display !== 'none') { init(); return; }
   if (waitingForPatientZero) {
     infectNearestCitizen(e.clientX, e.clientY);
-    waitingForPatientZero = false;
-    pzOverlay.style.display = 'none';
+    patientZeroCount++;
+    if (pzCount) pzCount.textContent = `${patientZeroCount} selected — ENTER to begin`;
   }
 });
 
-// Keydown: only restarts after game-over (no position, can't select a citizen)
-window.addEventListener('keydown', () => {
-  if (endOverlay.style.display !== 'none') init();
+// Keydown: Enter confirms patient zero selection, any key restarts after game-over
+window.addEventListener('keydown', (e) => {
+  if (endOverlay.style.display !== 'none') { init(); return; }
+  if (waitingForPatientZero && e.key === 'Enter' && patientZeroCount > 0) {
+    waitingForPatientZero = false;
+    pzOverlay.style.display = 'none';
+  }
 });
 
 // Restart on resize (city proportions change with canvas dimensions)
