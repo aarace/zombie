@@ -26,8 +26,10 @@ const SPRINTER_VISION_DISTANCE      = 80;     // px — sprinters have shorter v
 // CANVAS & DOM
 // ============================================================
 const cityCanvas = document.getElementById('city-canvas');
+const heatCanvas = document.getElementById('heat-canvas');
 const simCanvas  = document.getElementById('sim-canvas');
 const cityCtx    = cityCanvas.getContext('2d');
+const heatCtx    = heatCanvas.getContext('2d');
 const simCtx     = simCanvas.getContext('2d');
 
 const hudCitizens = document.getElementById('cnt-citizens');
@@ -50,13 +52,66 @@ let simSpeed = 1;
 let paused   = false;
 const hudSpeed = document.getElementById('cnt-speed');
 
+// Heat map state
+let heatMapEnabled = false;
+const HEAT_CELL = 8;  // px per heat grid cell
+let heatCols = 0, heatRows = 0;
+let heatGrid;  // Float32Array — accumulated infection intensity
+
 let canvasW = 0, canvasH = 0;
 
 function setupCanvases() {
   canvasW = window.innerWidth;
   canvasH = window.innerHeight;
   cityCanvas.width  = canvasW;  cityCanvas.height = canvasH;
+  heatCanvas.width  = canvasW;  heatCanvas.height = canvasH;
   simCanvas.width   = canvasW;  simCanvas.height  = canvasH;
+}
+
+function initHeatMap() {
+  heatCols = Math.ceil(canvasW / HEAT_CELL);
+  heatRows = Math.ceil(canvasH / HEAT_CELL);
+  heatGrid = new Float32Array(heatCols * heatRows);
+}
+
+function stampHeat(px, py, intensity) {
+  const col = (px / HEAT_CELL) | 0;
+  const row = (py / HEAT_CELL) | 0;
+  // Stamp a 3x3 kernel centered on the cell
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      const r = row + dr, c = col + dc;
+      if (r < 0 || r >= heatRows || c < 0 || c >= heatCols) continue;
+      const falloff = (dr === 0 && dc === 0) ? 1.0 : 0.4;
+      heatGrid[r * heatCols + c] = Math.min(1.0, heatGrid[r * heatCols + c] + intensity * falloff);
+    }
+  }
+}
+
+function renderHeatMap() {
+  heatCtx.clearRect(0, 0, canvasW, canvasH);
+  if (!heatMapEnabled) return;
+
+  for (let r = 0; r < heatRows; r++) {
+    for (let c = 0; c < heatCols; c++) {
+      const v = heatGrid[r * heatCols + c];
+      if (v < 0.01) continue;
+      // Color ramp: black -> red -> yellow -> white
+      let red, green, blue;
+      if (v < 0.33) {
+        const t = v / 0.33;
+        red = (t * 255) | 0; green = 0; blue = 0;
+      } else if (v < 0.66) {
+        const t = (v - 0.33) / 0.33;
+        red = 255; green = (t * 200) | 0; blue = 0;
+      } else {
+        const t = (v - 0.66) / 0.34;
+        red = 255; green = 200 + (t * 55) | 0; blue = (t * 180) | 0;
+      }
+      heatCtx.fillStyle = `rgba(${red},${green},${blue},${Math.min(v * 0.8, 0.6)})`;
+      heatCtx.fillRect(c * HEAT_CELL, r * HEAT_CELL, HEAT_CELL, HEAT_CELL);
+    }
+  }
 }
 
 // ============================================================
@@ -554,6 +609,7 @@ function simStep() {
     states[idx]      = 2;
     zombieType[idx]  = Math.random() < SPRINTER_CHANCE ? 1 : 0;
     wanderTimer[idx] = 0;
+    stampHeat(posX[idx], posY[idx], 0.15);  // big stamp on new infection
   }
 }
 
@@ -564,7 +620,15 @@ function gameLoop() {
     }
   }
 
-  // 4. Render and update HUD
+  // 3b. Zombies radiate low heat as they wander
+  if (heatMapEnabled && frameCount % 6 === 0) {
+    for (let i = 0; i < NUM_CITIZENS; i++) {
+      if (states[i] === 2) stampHeat(posX[i], posY[i], 0.008);
+    }
+  }
+
+  // 4. Render heat map and entities
+  renderHeatMap();
   render();
   const nz = updateHUD();
 
@@ -594,6 +658,7 @@ function init() {
   mask = buildStreetMask(buildings, canvasW, canvasH);
   renderCity(cityCtx, buildings, canvasW, canvasH);
 
+  initHeatMap();
   spawnEntities();
 
   endOverlay.style.display = 'none';
@@ -626,7 +691,7 @@ window.addEventListener('click', (e) => {
   }
 });
 
-// Keydown: speed controls, multi-pz confirm, restart after game-over
+// Keydown: speed controls, multi-pz confirm, heat map toggle, restart
 window.addEventListener('keydown', (e) => {
   if (endOverlay.style.display !== 'none') { init(); return; }
 
@@ -634,6 +699,13 @@ window.addEventListener('keydown', (e) => {
   if (waitingForPatientZero && e.key === 'Enter' && patientZeroCount > 0) {
     waitingForPatientZero = false;
     pzOverlay.style.display = 'none';
+    return;
+  }
+
+  // Heat map toggle
+  if (e.key === 'h' || e.key === 'H') {
+    heatMapEnabled = !heatMapEnabled;
+    if (!heatMapEnabled) heatCtx.clearRect(0, 0, canvasW, canvasH);
     return;
   }
 
