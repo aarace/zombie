@@ -498,18 +498,22 @@ function pickStreetTarget(i) {
 
 // True if the straight line from (x1,y1) to (x2,y2) passes through no building pixel.
 // Ray-marches in 3px steps; skips endpoints so entities near walls aren't self-occluded.
-// If the origin is inside a building (shelter), the ray skips until it exits that building.
-function hasLineOfSight(x1, y1, x2, y2) {
+// If fromShelter is true, the origin may be inside a building and the ray skips until
+// it exits that building (allows sheltered soldiers to shoot through "windows").
+function hasLineOfSight(x1, y1, x2, y2, fromShelter) {
   const dx = x2 - x1, dy = y2 - y1;
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist < 1) return true;
   const steps = Math.ceil(dist / 3);
   const sx = dx / steps, sy = dy / steps;
-  // Check if origin is inside a building — if so, skip until ray exits that building
-  const ox = (x1) | 0, oy = (y1) | 0;
-  const originInBuilding = (ox >= 0 && ox < canvasW && oy >= 0 && oy < canvasH)
-    ? mask[oy * canvasW + ox] === 0 : false;
-  let exited = !originInBuilding;
+  // Only allow building-skip when caller is known to be in a shelter
+  let exited = true;
+  if (fromShelter) {
+    const ox = (x1) | 0, oy = (y1) | 0;
+    const originInBuilding = (ox >= 0 && ox < canvasW && oy >= 0 && oy < canvasH)
+      ? mask[oy * canvasW + ox] === 0 : false;
+    exited = !originInBuilding;
+  }
   for (let k = 1; k < steps; k++) {
     const px = (x1 + sx * k) | 0;
     const py = (y1 + sy * k) | 0;
@@ -804,6 +808,7 @@ function spawnEntities() {
     zombieType[pz]   = 0;  // patient zero is always normal
     wanderTimer[pz]  = 0;
     waveStarted = true;
+    waveCalmTimer = WAVE_CALM_FRAMES; // delay before first wave can spawn
   }
 }
 
@@ -821,7 +826,10 @@ function infectNearestCitizen(mx, my) {
     states[bestIdx]      = 2;
     zombieType[bestIdx]  = 0;  // manually selected zombies are normal
     wanderTimer[bestIdx] = 0;
-    waveStarted = true;
+    if (!waveStarted) {
+      waveStarted = true;
+      waveCalmTimer = WAVE_CALM_FRAMES; // delay before first wave can spawn
+    }
   }
 }
 
@@ -1091,7 +1099,7 @@ function updateSoldier(i, toKill) {
 
   // Shoot nearest zombie if in range, cooldown expired, and line of sight clear
   if (nearestZIdx >= 0 && nearestZDist2 <= sR2 && soldierCooldown[i] <= 0) {
-    if (hasLineOfSight(x, y, posX[nearestZIdx], posY[nearestZIdx])) {
+    if (hasLineOfSight(x, y, posX[nearestZIdx], posY[nearestZIdx], inShelter)) {
       if (Math.random() < SOLDIER_KILL_CHANCE) {
         toKill.add(nearestZIdx);
       }
@@ -1137,14 +1145,30 @@ function updateSoldier(i, toKill) {
       // Count down to leave shelter
       if (--wanderTimer[i] <= 0) {
         // Safe enough — leave shelter and resume patrol
-        shelterIdx[i] = -1;
-        // Step outside the shelter building
-        const side = (Math.random() * 4) | 0;
-        if (side === 0)      { posX[i] = s.x - 6; posY[i] = s.cy; }
-        else if (side === 1) { posX[i] = s.x + s.w + 6; posY[i] = s.cy; }
-        else if (side === 2) { posX[i] = s.cx; posY[i] = s.y - 6; }
-        else                 { posX[i] = s.cx; posY[i] = s.y + s.h + 6; }
-        pickStreetTarget(i);
+        // Step outside the shelter building — try each side, pick first passable
+        const exits = [
+          { x: s.x - 6,         y: s.cy },
+          { x: s.x + s.w + 6,   y: s.cy },
+          { x: s.cx,             y: s.y - 6 },
+          { x: s.cx,             y: s.y + s.h + 6 }
+        ];
+        const startSide = (Math.random() * 4) | 0;
+        let exitFound = false;
+        for (let e = 0; e < 4; e++) {
+          const exit = exits[(startSide + e) % 4];
+          if (circlePassable(exit.x, exit.y)) {
+            posX[i] = exit.x; posY[i] = exit.y;
+            shelterIdx[i] = -1;
+            pickStreetTarget(i);
+            exitFound = true;
+            break;
+          }
+        }
+        if (exitFound) {
+          return; // soldier left shelter — skip shelter wander
+        }
+        // All exits blocked — stay in shelter, retry later
+        wanderTimer[i] = 60;
       }
     } else {
       // Zombies visible — stay in shelter, reset leave timer
@@ -1539,6 +1563,7 @@ function init() {
       wanderTimer[idx] = 0;
     }
     waveStarted = true;
+    waveCalmTimer = WAVE_CALM_FRAMES; // delay before first wave can spawn
   } else {
     waitingForPatientZero = !INITIAL_ZOMBIE;
     patientZeroCount = 0;
